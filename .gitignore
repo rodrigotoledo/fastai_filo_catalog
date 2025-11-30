@@ -35,6 +35,18 @@ migrations/
 # Jupyter
 .ipynb_checkpoints/
 
+# AI/ML Models and Cache
+cache/
+.huggingface/
+*.h5
+*.pb
+*.onnx
+*.pkl
+*.joblib
+
+# Docker
+.dockerignore
+
 # Others
 *.sqlite3
 *.db

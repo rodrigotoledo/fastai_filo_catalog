@@ -26,6 +26,13 @@ COPY . .
 # Criar diretório para uploads e ajustar permissões
 RUN mkdir -p uploads && chown -R appuser:appuser /app
 
+# Criar diretório de cache do HuggingFace e ajustar permissões
+RUN mkdir -p /app/cache && chown -R appuser:appuser /app/cache
+
+# Definir variável de ambiente para cache
+ENV TRANSFORMERS_CACHE=/app/cache
+ENV HF_HOME=/app/cache
+
 # Expor porta
 EXPOSE 8000
 

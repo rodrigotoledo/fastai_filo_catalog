@@ -14,5 +14,5 @@ class Photo(SQLModel, table=True):
     uploaded_at: datetime = Field(default_factory=datetime.utcnow)
     processed: bool = Field(default=False)
     # Campos para IA
-    embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(768)))
+    embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(512)))
     description: Optional[str] = None

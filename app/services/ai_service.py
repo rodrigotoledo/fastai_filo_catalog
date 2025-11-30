@@ -1,38 +1,69 @@
 import numpy as np
 from pathlib import Path
 from typing import List, Tuple
-import hashlib
+from PIL import Image
+import torch
+from transformers import CLIPProcessor, CLIPModel
+import logging
+
+logger = logging.getLogger(__name__)
 
 class AIService:
     def __init__(self):
-        # Por enquanto, vamos usar embeddings simples baseados em hash
-        # TODO: Implementar modelos reais de IA quando necessário
-        self.embedding_dim = 768
+        # Usar CLIP para processamento real de imagens
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Usando dispositivo: {self.device}")
+
+        try:
+            self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+            self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            self.model.to(self.device)
+            self.embedding_dim = 512  # CLIP ViT-B/32 tem 512 dimensões
+            logger.info("CLIP model carregado com sucesso")
+        except Exception as e:
+            logger.error(f"Erro ao carregar CLIP model: {e}")
+            # Fallback para embeddings simples
+            self.model = None
+            self.processor = None
+            self.embedding_dim = 768
 
     def process_image(self, image_path: str) -> Tuple[List[float], str]:
         """
-        Processa uma imagem e retorna embedding + descrição
+        Processa uma imagem usando CLIP e retorna embedding + descrição
         """
         try:
-            # Criar embedding baseado no nome do arquivo (determinístico)
+            if self.model is None:
+                # Fallback para método simples
+                filename = Path(image_path).name
+                embedding = self._simple_embedding()
+                description = f"Imagem processada (fallback): {filename}"
+                return embedding, description
+
+            # Carregar e processar imagem
+            image = Image.open(image_path).convert('RGB')
+
+            # Processar com CLIP
+            inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+
+            with torch.no_grad():
+                image_features = self.model.get_image_features(**inputs)
+
+            # Normalizar e converter para lista
+            embedding = image_features.cpu().numpy().flatten().tolist()
+            embedding = [float(x) for x in embedding]
+
+            # Gerar descrição baseada no nome do arquivo
             filename = Path(image_path).name
-            embedding = self._filename_to_embedding(filename)
+            description = f"Imagem processada com IA: {filename}"
 
-            description = f"Imagem processada: {filename}"
-
+            logger.info(f"Imagem {filename} processada com sucesso")
             return embedding, description
 
         except Exception as e:
-            print(f"Erro ao processar imagem {image_path}: {str(e)}")
+            logger.error(f"Erro ao processar imagem {image_path}: {str(e)}")
             # Fallback
-            return self._simple_embedding(), f"Imagem processada: {Path(image_path).name}"
-
-    def _filename_to_embedding(self, filename: str) -> List[float]:
-        """Cria embedding determinístico baseado no nome do arquivo"""
-        hash_obj = hashlib.md5(filename.encode())
-        seed = int(hash_obj.hexdigest(), 16) % (2**32)
-        np.random.seed(seed)
-        return np.random.normal(0, 1, self.embedding_dim).tolist()
+            filename = Path(image_path).name
+            return self._simple_embedding(), f"Erro no processamento: {filename}"
 
     def _simple_embedding(self) -> List[float]:
         """Embedding simples para fallback"""
@@ -65,13 +96,29 @@ class AIService:
 
     def text_to_embedding(self, text: str) -> List[float]:
         """
-        Converte texto para embedding
+        Converte texto para embedding usando CLIP
         """
-        # Embedding baseado no texto (determinístico)
-        hash_obj = hashlib.md5(text.encode())
-        seed = int(hash_obj.hexdigest(), 16) % (2**32)
-        np.random.seed(seed)
-        return np.random.normal(0, 1, self.embedding_dim).tolist()
+        try:
+            if self.model is None:
+                # Fallback para método simples
+                return self._simple_embedding()
+
+            # Processar texto com CLIP
+            inputs = self.processor(text=[text], return_tensors="pt", padding=True).to(self.device)
+
+            with torch.no_grad():
+                text_features = self.model.get_text_features(**inputs)
+
+            # Normalizar e converter para lista
+            embedding = text_features.cpu().numpy().flatten().tolist()
+            embedding = [float(x) for x in embedding]
+
+            logger.info(f"Texto processado: '{text}'")
+            return embedding
+
+        except Exception as e:
+            logger.error(f"Erro ao processar texto '{text}': {str(e)}")
+            return self._simple_embedding()
 
     def find_similar_by_text(self, query_text: str, embeddings: List[Tuple[int, List[float]]], top_k: int = 10) -> List[Tuple[int, float]]:
         """
