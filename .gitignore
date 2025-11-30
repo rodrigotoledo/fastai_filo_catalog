@@ -38,3 +38,5 @@ migrations/
 # Others
 *.sqlite3
 *.db
+uploads/*.*
+!uploads/.keep

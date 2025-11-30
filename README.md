@@ -1,186 +1,257 @@
-# Photo Finder Backend – FastAPI AI API
+# Photo Finder API
 
-API backend robusto, construído com [FastAPI](https://fastapi.tiangolo.com/), integrando recursos de IA (Machine Learning/NLP) e banco de dados PostgreSQL. Ideal para aplicações que exigem busca, análise e manipulação inteligente de fotos/imagens.
+API RESTful para upload, armazenamento e gerenciamento de fotos construída com FastAPI. Inclui funcionalidades de paginação, validação de arquivos e suporte a PostgreSQL com pgvector para futuras implementações de IA.
 
----
+## 🚀 Funcionalidades
 
-## Sumário
+- **Upload múltiplo de fotos** com validação de tipo de arquivo
+- **Paginação inteligente** (página/tamanho personalizado)
+- **Servir arquivos estáticos** diretamente via API
+- **Banco PostgreSQL** com suporte a vetores (pgvector)
+- **Redis** para cache e filas assíncronas
+- **Documentação automática** via Swagger/OpenAPI
+- **CORS configurado** para frontend (Next.js)
+- **Docker completo** para desenvolvimento
 
-- [Funcionalidades](#funcionalidades)
-- [Requisitos](#requisitos)
-- [Instalação e Setup](#instalação-e-setup)
-- [Execução](#execução)
-- [Testes](#testes)
-- [Estrutura do Projeto](#estrutura-do-projeto)
-- [Principais Dependências](#principais-dependências)
-- [Deploy](#deploy)
-- [Referências](#referências)
-
----
-
-## Funcionalidades
-
-- Endpoints RESTful com FastAPI
-- Integração de IA: modelos de ML/NLP, embeddings, busca vetorial com pgvector
-- Banco de dados PostgreSQL com suporte a vetores (pgvector)
-- Fila de tarefas assíncronas com Redis/RQ
-- Documentação automática via Swagger/OpenAPI
-
-## Requisitos
+## 📋 Requisitos
 
 - Python 3.8+
-- PostgreSQL 13+
-- Redis (opcional, para filas)
-- pip
+- Docker & Docker Compose
+- PostgreSQL 13+ (via Docker)
+- Redis (via Docker)
 
-## Instalação e Setup
 
-1. **Clone o repositório**
-   ```bash
-   git clone https://github.com/yourusername/photo-finder.git
-   cd photo-finder/backend
-   ```
+## 🛠️ Instalação e Setup
 
-2. **Crie e ative o ambiente virtual**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install --upgrade pip
-   ```
 
-3. **Instale as dependências**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 1. Clone o repositório
 
-4. **(Opcional) Gere um novo requirements.txt limpo**
-   ```bash
-   pip install pipreqs
-   pipreqs . --force
-   ```
 
-5. **Configure o banco de dados com Docker**
+```bash
+git clone <seu-repositorio>
+cd photo-finder/backend
 
-   ```bash
-   docker compose up -d
-   ```
+```
 
-   > Isso iniciará o PostgreSQL e Redis em containers Docker.
+### 2. Configure o ambiente
 
-6. **Configure as variáveis de ambiente**
 
-   Copie o `.env.example` para `.env` e ajuste conforme necessário:
+```bash
+# Crie ambiente virtual (opcional)
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# ou .venv\Scripts\activate no Windows
 
-   ```bash
-   cp .env.example .env
-   ```
+# Instale dependências
+pip install -r requirements.txt
 
-## Configuração de Ambiente
+```
 
-Copie o `.env.example` para `.env` e ajuste conforme necessário:
+### 3. Configure variáveis de ambiente
 
 ```bash
 cp .env.example .env
+# Edite .env conforme necessário
 ```
 
-O arquivo `.env` contém as variáveis necessárias, como `DATABASE_URL` e `REDIS_URL`.
+### 4. Inicie os serviços com Docker
 
-## Execução
+```bash
+docker compose up -d
+```
 
-1. **Migrações de banco de dados** (após criar modelos)
-   ```bash
-   # Criar uma nova migração
-   alembic revision --autogenerate -m "Descrição da migração"
+Isso iniciará:
 
-   # Aplicar migrações
-   alembic upgrade head
-   ```
+- **PostgreSQL** na porta 5432
+- **Redis** na porta 6379
+- **Aplicação FastAPI** na porta 8000
 
-2. **Inicie o servidor FastAPI**
-   ```bash
-   python run.py
-   ```
-   > Ou diretamente: `uvicorn app.main:app --reload`
+## 🗄️ Banco de Dados
 
-3. **Acesse a documentação interativa**
-   - [http://localhost:8000/docs](http://localhost:8000/docs)
+### Migrações
 
-## Testes
+```bash
+# Criar nova migração
+./alembic.sh revision --autogenerate -m "Descrição"
 
-1. **Execute os testes (exemplo com pytest):**
-   ```bash
-   pytest
-   ```
-   > Adapte conforme a ferramenta de testes utilizada.
+# Aplicar migrações
+./alembic.sh upgrade head
+```
 
-## Estrutura do Projeto
+### Ou via Docker
 
-```text
+```bash
+docker compose exec app alembic upgrade head
+```
+
+## 🚀 Execução
+
+### Ambiente de Desenvolvimento
+
+```bash
+# Via Python
+python run.py
+
+# Ou diretamente
+uvicorn app.main:app --reload
+```
+
+### Acesse
+
+- **API**: [http://localhost:8000](http://localhost:8000)
+- **Documentação**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+
+## 📚 API Endpoints
+
+### Upload de Fotos
+
+```http
+POST /photos/upload
+```
+
+- **Body**: `multipart/form-data` com campo `files[]`
+- **Suporte**: Múltiplas imagens (JPEG, PNG, etc.)
+- **Resposta**: Lista de fotos criadas
+
+### Listar Fotos (com paginação)
+
+```http
+GET /photos/?page=1&page_size=10
+```
+
+**Parâmetros:**
+
+- `page` (int, ≥1): Número da página
+- `page_size` (int, 1-100): Itens por página (padrão: 10)
+
+**Resposta:**
+
+```json
+{
+  "photos": [...],
+  "total": 150,
+  "page": 1,
+  "page_size": 10,
+  "total_pages": 15,
+  "has_next": true,
+  "has_prev": false
+}
+```
+
+### Obter Foto Específica
+
+```http
+GET /photos/{photo_id}
+```
+
+### Servir Arquivo de Foto
+
+```http
+GET /photos/file/{photo_id}
+```
+
+Retorna o arquivo binário da imagem.
+
+## 🧪 Testes
+
+### Upload de teste
+
+```bash
+# Baixar imagem de teste
+curl -L -s "https://loremflickr.com/400/300/cat" --output test.jpg
+
+# Fazer upload
+curl -X POST -F "files=@test.jpg" http://localhost:8000/photos/upload
+```
+
+### Listar fotos
+
+```bash
+curl "http://localhost:8000/photos/?page=1&page_size=5"
+```
+
+## 📁 Estrutura do Projeto
+
+```
 backend/
 ├── app/
-│   ├── main.py         # Ponto de entrada FastAPI
-│   ├── api/           # Rotas e endpoints
-│   ├── models/        # Modelos Pydantic/SQLModel
-│   ├── services/      # Lógica de negócio e IA
-│   ├── db/            # Configuração e scripts do banco
-│   └── ...
-├── alembic/           # Migrações do banco
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── photos.py          # Endpoints de fotos
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── photo.py           # Modelo Photo (SQLModel)
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   └── photo.py           # Schemas Pydantic
+│   ├── services/
+│   │   ├── __init__.py
+│   │   └── photo_service.py   # Lógica de negócio
+│   ├── db/
+│   │   └── database.py        # Configuração DB
+│   └── main.py                # App FastAPI
+├── alembic/                   # Migrações DB
+├── uploads/                   # Arquivos enviados
 ├── requirements.txt
-├── README.md
-├── .env
 ├── docker-compose.yml
-├── init.sql           # Script de inicialização do banco
-└── ...
+├── Dockerfile
+├── .env.example
+└── README.md
 ```
 
-## Principais Dependências
-
-- **FastAPI**: Framework web moderno e rápido
-- **SQLModel**: ORM para SQL/NoSQL
-- **pgvector**: Suporte a vetores no PostgreSQL
-- **sentence-transformers, transformers, torch**: Modelos de IA e embeddings
-- **Redis, rq**: Fila de tarefas assíncronas
-- **python-dotenv**: Gerenciamento de variáveis de ambiente
-
-Veja todas as dependências em [`requirements.txt`](requirements.txt).
-
-## Deploy
+## 🐳 Docker
 
 ### Desenvolvimento
+```bash
+# Subir todos os serviços
+docker compose up -d
 
-Use o `docker-compose.yml` para subir PostgreSQL e Redis localmente.
+# Ver logs
+docker compose logs -f app
 
-### Produção
-
-Sugestão com Docker:
-
-```dockerfile
-# Dockerfile
-FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Executar comandos no container
+docker compose exec app bash
 ```
 
-Para deploy completo, considere usar Docker Compose ou Kubernetes com volumes persistentes.
+### Ambiente de Produção
+O `Dockerfile` está configurado para produção com usuário não-root e permissões adequadas.
 
-## Referências
+## 🔧 Principais Dependências
 
-- [FastAPI Docs](https://fastapi.tiangolo.com/)
-- [SQLModel](https://sqlmodel.tiangolo.com/)
-- [pgvector](https://github.com/pgvector/pgvector)
-- [Sentence Transformers](https://www.sbert.net/)
-- [Uvicorn](https://www.uvicorn.org/)
-- [Alembic](https://alembic.sqlalchemy.org/)
+- **FastAPI**: Framework web assíncrono
+- **SQLModel**: ORM com Pydantic
+- **PostgreSQL + pgvector**: DB com suporte a vetores
+- **Redis**: Cache e filas
+- **Alembic**: Migrações de banco
+- **python-multipart**: Upload de arquivos
+- **aiofiles**: Manipulação assíncrona de arquivos
 
----
+## 🚀 Deploy
 
-## Contribuição
+### Ambiente Local
+```bash
+docker compose up -d
+python run.py
+```
 
-Sinta-se à vontade para abrir issues ou pull requests. Para mudanças significativas, abra uma issue primeiro para discutir.
+### Produção
+```bash
+# Build da imagem
+docker build -t photo-finder .
 
-## Licença
+# Run com compose
+docker compose -f docker-compose.prod.yml up -d
+```
 
-Este projeto está sob a licença MIT.
+## 🤝 Contribuição
+
+1. Fork o projeto
+2. Crie uma branch (`git checkout -b feature/nova-funcionalidade`)
+3. Commit suas mudanças (`git commit -am 'Adiciona nova funcionalidade'`)
+4. Push para a branch (`git push origin feature/nova-funcionalidade`)
+5. Abra um Pull Request
+
+## 📄 Licença
+
+MIT License - veja o arquivo LICENSE para detalhes.
