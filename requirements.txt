@@ -1,4 +1,5 @@
 alembic==1.13.2
+aiofiles
 anyio==4.6.0
 fastapi==0.115.0
 h11==0.14.0

@@ -6,11 +6,11 @@ import os
 from app.db.database import get_db
 from app.services.photo_service import PhotoService
 from app.models.photo import Photo
-from app.schemas.photo import PhotoResponse, PaginatedPhotosResponse
+from app.schemas.photo import PhotoResponse, PaginatedPhotosResponse, SearchResponse
 
 router = APIRouter()
 
-@router.post("/upload", response_model=List[Photo])
+@router.post("/upload", response_model=List[PhotoResponse])
 async def upload_photos(
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db)
@@ -64,7 +64,7 @@ def get_photo_file(photo_id: int, db: Session = Depends(get_db)):
 
     return FileResponse(file_path, media_type=photo.content_type)
 
-@router.get("/{photo_id}", response_model=Photo)
+@router.get("/{photo_id}", response_model=PhotoResponse)
 def get_photo(photo_id: int, db: Session = Depends(get_db)):
     """
     Get a specific photo by ID
@@ -74,3 +74,23 @@ def get_photo(photo_id: int, db: Session = Depends(get_db)):
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
     return photo
+
+@router.get("/search/text", response_model=SearchResponse)
+def search_photos_by_text(
+    q: str = Query(..., description="Search query text"),
+    limit: int = Query(10, ge=1, le=50, description="Maximum number of results"),
+    db: Session = Depends(get_db)
+):
+    """
+    Search photos by text similarity using AI
+    """
+    photo_service = PhotoService(db)
+    return photo_service.search_similar_photos(query_text=q, limit=limit)
+
+@router.get("/processing/stats")
+def get_processing_stats(db: Session = Depends(get_db)):
+    """
+    Get processing statistics
+    """
+    photo_service = PhotoService(db)
+    return photo_service.get_processing_stats()

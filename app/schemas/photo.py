@@ -12,9 +12,18 @@ class PhotoResponse(BaseModel):
     content_type: str
     uploaded_at: datetime
     processed: bool
+    description: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+class SearchResultResponse(BaseModel):
+    photo: PhotoResponse
+    similarity_score: float
+
+class SearchResponse(BaseModel):
+    results: List[SearchResultResponse]
+    message: Optional[str] = None
 
 class PaginatedPhotosResponse(BaseModel):
     photos: List[PhotoResponse]

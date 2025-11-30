@@ -57,6 +57,40 @@ services:
       timeout: 10s
       retries: 3
 
+  worker:
+    build: .
+    container_name: photo_finder_worker
+    restart: always
+    command: python worker.py
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    build: .
+    container_name: photo_finder_scheduler
+    restart: always
+    command: python scheduler.py
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+    env_file:
+      - .env
+    environment:
+      SCHEDULER_INTERVAL_SECONDS: 300  # 5 minutos
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:

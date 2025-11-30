@@ -5,6 +5,9 @@ from fastapi import UploadFile, HTTPException
 from sqlalchemy.orm import Session
 from app.models.photo import Photo
 import aiofiles
+from app.jobs.photo_processor import enqueue_photo_processing
+from app.services.ai_service import AIService
+from typing import List, Tuple
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -50,6 +53,13 @@ class PhotoService:
         self.db.commit()
         self.db.refresh(photo)
 
+        # Enfileirar processamento de IA
+        try:
+            job_id = enqueue_photo_processing(photo.id)
+            print(f"DEBUG: Job enfileirado: {job_id}")
+        except Exception as e:
+            print(f"WARNING: Não foi possível enfileirar processamento: {str(e)}")
+
         return photo
 
     def get_photos(self, page: int = 1, page_size: int = 12):
@@ -78,3 +88,67 @@ class PhotoService:
 
     def get_photo(self, photo_id: int):
         return self.db.query(Photo).filter(Photo.id == photo_id).first()
+
+    def search_similar_photos(self, query_text: str = None, photo_id: int = None, limit: int = 10):
+        """
+        Busca fotos similares por texto ou por outra foto
+        """
+        ai_service = AIService()
+
+        # Buscar todas as fotos processadas
+        processed_photos = self.db.query(Photo).filter(
+            Photo.processed == True,
+            Photo.embedding.isnot(None)
+        ).all()
+
+        if not processed_photos:
+            return {"results": [], "message": "Nenhuma foto processada encontrada"}
+
+        # Preparar embeddings
+        embeddings = [(photo.id, photo.embedding) for photo in processed_photos]
+
+        # Buscar por texto ou por foto similar
+        if query_text:
+            similar_photos = ai_service.find_similar_by_text(query_text, embeddings, limit)
+        elif photo_id:
+            # Buscar foto de referência
+            ref_photo = self.db.query(Photo).filter(Photo.id == photo_id).first()
+            if not ref_photo or not ref_photo.embedding:
+                raise HTTPException(status_code=404, detail="Foto de referência não encontrada ou não processada")
+
+            similar_photos = ai_service.search_similar_images(ref_photo.embedding, embeddings, limit)
+        else:
+            raise HTTPException(status_code=400, detail="Deve fornecer query_text ou photo_id")
+
+        # Buscar fotos completas pelos IDs
+        photo_ids = [photo_id for photo_id, _ in similar_photos]
+        photos = self.db.query(Photo).filter(Photo.id.in_(photo_ids)).all()
+
+        # Criar mapa de ID -> foto
+        photo_map = {photo.id: photo for photo in photos}
+
+        # Montar resultado com scores
+        results = []
+        for photo_id, score in similar_photos:
+            if photo_id in photo_map:
+                results.append({
+                    "photo": photo_map[photo_id],
+                    "similarity_score": score
+                })
+
+        return {"results": results}
+
+    def get_processing_stats(self):
+        """
+        Retorna estatísticas de processamento
+        """
+        total_photos = self.db.query(Photo).count()
+        processed_photos = self.db.query(Photo).filter(Photo.processed == True).count()
+        unprocessed_photos = total_photos - processed_photos
+
+        return {
+            "total_photos": total_photos,
+            "processed_photos": processed_photos,
+            "unprocessed_photos": unprocessed_photos,
+            "processing_percentage": round((processed_photos / total_photos * 100) if total_photos > 0 else 0, 2)
+        }
