@@ -6,25 +6,22 @@ API backend robusto, construído com [FastAPI](https://fastapi.tiangolo.com/), i
 
 ## Sumário
 
-- [Photo Finder Backend – FastAPI AI API](#photo-finder-backend--fastapi-ai-api)
-  - [Sumário](#sumário)
-  - [Funcionalidades](#funcionalidades)
-  - [Requisitos](#requisitos)
-  - [Instalação e Setup](#instalação-e-setup)
-  - [Configuração de Ambiente](#configuração-de-ambiente)
-  - [Execução](#execução)
-  - [Testes](#testes)
-  - [Estrutura do Projeto (sugerida)](#estrutura-do-projeto-sugerida)
-  - [Principais Dependências](#principais-dependências)
-  - [Deploy](#deploy)
-  - [Referências](#referências)
+- [Funcionalidades](#funcionalidades)
+- [Requisitos](#requisitos)
+- [Instalação e Setup](#instalação-e-setup)
+- [Execução](#execução)
+- [Testes](#testes)
+- [Estrutura do Projeto](#estrutura-do-projeto)
+- [Principais Dependências](#principais-dependências)
+- [Deploy](#deploy)
+- [Referências](#referências)
 
 ---
 
 ## Funcionalidades
 
 - Endpoints RESTful com FastAPI
-- Integração de IA: modelos de ML/NLP, embeddings, busca vetorial
+- Integração de IA: modelos de ML/NLP, embeddings, busca vetorial com pgvector
 - Banco de dados PostgreSQL com suporte a vetores (pgvector)
 - Fila de tarefas assíncronas com Redis/RQ
 - Documentação automática via Swagger/OpenAPI
@@ -62,26 +59,48 @@ API backend robusto, construído com [FastAPI](https://fastapi.tiangolo.com/), i
    pipreqs . --force
    ```
 
+5. **Configure o banco de dados com Docker**
+
+   ```bash
+   docker compose up -d
+   ```
+
+   > Isso iniciará o PostgreSQL e Redis em containers Docker.
+
+6. **Configure as variáveis de ambiente**
+
+   Copie o `.env.example` para `.env` e ajuste conforme necessário:
+
+   ```bash
+   cp .env.example .env
+   ```
+
 ## Configuração de Ambiente
 
-Crie um arquivo `.env` com as variáveis de ambiente necessárias:
+Copie o `.env.example` para `.env` e ajuste conforme necessário:
 
-```env
-DATABASE_URL=postgresql://user:password@localhost:5432/yourdatabase
-# Adicione outras variáveis conforme necessário
+```bash
+cp .env.example .env
 ```
+
+O arquivo `.env` contém as variáveis necessárias, como `DATABASE_URL` e `REDIS_URL`.
 
 ## Execução
 
-1. **(Opcional) Migrações de banco de dados**
+1. **Migrações de banco de dados** (após criar modelos)
    ```bash
+   # Criar uma nova migração
+   alembic revision --autogenerate -m "Descrição da migração"
+
+   # Aplicar migrações
    alembic upgrade head
    ```
 
 2. **Inicie o servidor FastAPI**
    ```bash
-   uvicorn app.main:app --reload
+   python run.py
    ```
+   > Ou diretamente: `uvicorn app.main:app --reload`
 
 3. **Acesse a documentação interativa**
    - [http://localhost:8000/docs](http://localhost:8000/docs)
@@ -94,7 +113,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/yourdatabase
    ```
    > Adapte conforme a ferramenta de testes utilizada.
 
-## Estrutura do Projeto (sugerida)
+## Estrutura do Projeto
 
 ```text
 backend/
@@ -105,9 +124,12 @@ backend/
 │   ├── services/      # Lógica de negócio e IA
 │   ├── db/            # Configuração e scripts do banco
 │   └── ...
+├── alembic/           # Migrações do banco
 ├── requirements.txt
 ├── README.md
 ├── .env
+├── docker-compose.yml
+├── init.sql           # Script de inicialização do banco
 └── ...
 ```
 
@@ -124,16 +146,25 @@ Veja todas as dependências em [`requirements.txt`](requirements.txt).
 
 ## Deploy
 
-Sugestão de deploy (exemplo com Docker):
+### Desenvolvimento
+
+Use o `docker-compose.yml` para subir PostgreSQL e Redis localmente.
+
+### Produção
+
+Sugestão com Docker:
 
 ```dockerfile
-# Dockerfile exemplo
+# Dockerfile
 FROM python:3.12-slim
 WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-RUN pip install --upgrade pip && pip install -r requirements.txt
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
+
+Para deploy completo, considere usar Docker Compose ou Kubernetes com volumes persistentes.
 
 ## Referências
 
@@ -142,6 +173,14 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 - [pgvector](https://github.com/pgvector/pgvector)
 - [Sentence Transformers](https://www.sbert.net/)
 - [Uvicorn](https://www.uvicorn.org/)
+- [Alembic](https://alembic.sqlalchemy.org/)
 
 ---
-Sinta-se à vontade para contribuir ou sugerir melhorias!
+
+## Contribuição
+
+Sinta-se à vontade para abrir issues ou pull requests. Para mudanças significativas, abra uma issue primeiro para discutir.
+
+## Licença
+
+Este projeto está sob a licença MIT.
