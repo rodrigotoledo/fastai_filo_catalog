@@ -161,6 +161,9 @@ Retorna o arquivo binário da imagem.
 # Baixar imagem de teste
 curl -L -s "https://loremflickr.com/400/300/cat" --output test.jpg
 
+# varios arquivos
+for i in {2..20}; do curl -L -s "https://loremflickr.com/800/600/cat?random=$i" --output cat_image$i.jpg; done
+
 # Fazer upload
 curl -X POST -F "files=@test.jpg" http://localhost:8000/photos/upload
 ```

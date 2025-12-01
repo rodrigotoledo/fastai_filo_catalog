@@ -27,7 +27,7 @@ class AIService:
             self.processor = None
             self.embedding_dim = 768
 
-    def process_image(self, image_path: str) -> Tuple[List[float], str]:
+    def process_image(self, image_path: str, user_prompt: str = None) -> Tuple[List[float], str]:
         """
         Processa uma imagem usando CLIP e retorna embedding + descrição
         """
@@ -37,26 +37,59 @@ class AIService:
                 filename = Path(image_path).name
                 embedding = self._simple_embedding()
                 description = f"Imagem processada (fallback): {filename}"
+                if user_prompt:
+                    description += f" | Contexto: {user_prompt}"
                 return embedding, description
 
             # Carregar e processar imagem
             image = Image.open(image_path).convert('RGB')
 
-            # Processar com CLIP
-            inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+            # Se temos prompt do usuário, combinar com processamento da imagem
+            if user_prompt and user_prompt.strip():
+                # Estratégia: Processar imagem + texto juntos
+                combined_text = f"Esta é uma foto de {user_prompt}"
 
-            with torch.no_grad():
-                image_features = self.model.get_image_features(**inputs)
+                # Processar imagem
+                image_inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+                image_features = self.model.get_image_features(**image_inputs)
 
-            # Normalizar e converter para lista
-            embedding = image_features.cpu().numpy().flatten().tolist()
+                # Processar texto combinado
+                text_inputs = self.processor(text=[combined_text], return_tensors="pt", padding=True).to(self.device)
+                text_features = self.model.get_text_features(**text_inputs)
+
+                # Estratégia adaptativa: se o user_prompt contém palavras-chave específicas,
+                # dar mais peso ao texto para melhorar matching exato
+                keywords = ['gato', 'cachorro', 'pássaro', 'ave', 'carro', 'praia', 'montanha']
+                has_specific_keywords = any(keyword in user_prompt.lower() for keyword in keywords)
+
+                if has_specific_keywords:
+                    # Dar muito mais peso ao texto para matching exato
+                    combined_embedding = 0.1 * image_features + 0.9 * text_features
+                else:
+                    # Peso balanceado para descrições gerais
+                    combined_embedding = 0.5 * image_features + 0.5 * text_features
+
+                # Normalizar
+                combined_embedding = combined_embedding / combined_embedding.norm(dim=-1, keepdim=True)
+
+                embedding = combined_embedding.detach().cpu().numpy().flatten().tolist()
+                description = f"Imagem processada com contexto: {user_prompt}"
+
+            else:
+                # Processamento normal da imagem
+                inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+
+                with torch.no_grad():
+                    image_features = self.model.get_image_features(**inputs)
+
+                embedding = image_features.detach().cpu().numpy().flatten().tolist()
+                filename = Path(image_path).name
+                description = f"Imagem processada com IA: {filename}"
+
+            # Garantir que embedding seja lista de floats
             embedding = [float(x) for x in embedding]
 
-            # Gerar descrição baseada no nome do arquivo
-            filename = Path(image_path).name
-            description = f"Imagem processada com IA: {filename}"
-
-            logger.info(f"Imagem {filename} processada com sucesso")
+            logger.info(f"Imagem {Path(image_path).name} processada com sucesso")
             return embedding, description
 
         except Exception as e:
@@ -110,7 +143,7 @@ class AIService:
                 text_features = self.model.get_text_features(**inputs)
 
             # Normalizar e converter para lista
-            embedding = text_features.cpu().numpy().flatten().tolist()
+            embedding = text_features.detach().cpu().numpy().flatten().tolist()
             embedding = [float(x) for x in embedding]
 
             logger.info(f"Texto processado: '{text}'")

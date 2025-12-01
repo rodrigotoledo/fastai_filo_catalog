@@ -3,6 +3,9 @@ from typing import List, Optional
 from datetime import datetime
 from app.models.photo import Photo
 
+class PhotoUploadRequest(BaseModel):
+    description: Optional[str] = None  # Prompt descritivo fornecido pelo usuário
+
 class PhotoResponse(BaseModel):
     id: int
     filename: str
@@ -13,6 +16,7 @@ class PhotoResponse(BaseModel):
     uploaded_at: datetime
     processed: bool
     description: Optional[str] = None
+    user_description: Optional[str] = None  # Prompt fornecido pelo usuário
 
     class Config:
         from_attributes = True

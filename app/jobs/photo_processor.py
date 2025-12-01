@@ -45,7 +45,7 @@ def process_photo_job(photo_id: int):
 
         # Processar com IA
         ai_service = AIService()
-        embedding, description = ai_service.process_image(photo.file_path)
+        embedding, description = ai_service.process_image(photo.file_path, photo.user_description)
 
         # Atualizar foto no banco
         photo.embedding = embedding

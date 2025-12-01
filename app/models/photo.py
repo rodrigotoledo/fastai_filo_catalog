@@ -16,3 +16,4 @@ class Photo(SQLModel, table=True):
     # Campos para IA
     embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(512)))
     description: Optional[str] = None
+    user_description: Optional[str] = None  # Prompt descritivo fornecido pelo usuário
