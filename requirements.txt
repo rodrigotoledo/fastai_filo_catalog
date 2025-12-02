@@ -2,6 +2,7 @@ alembic==1.13.2
 aiofiles
 anyio==4.6.0
 fastapi==0.115.0
+faker==20.1.0
 h11==0.14.0
 httpx==0.27.2
 idna==3.10
@@ -22,3 +23,4 @@ typing-extensions==4.12.2
 uvicorn==0.30.6
 python-multipart==0.0.9
 aiofiles==23.2.1
+email-validator>=2.0.0

@@ -192,7 +192,9 @@ class PhotoService:
 
             photos.append(photo)
 
-        return photos
+        # Ordenar por data de upload descendente (mais recentes primeiro)
+        photos_sorted = sorted(photos, key=lambda p: p.uploaded_at, reverse=True)
+        return photos_sorted
 
     def get_photos(self, page: int = 1, page_size: int = 12):
         """
@@ -204,7 +206,7 @@ class PhotoService:
         skip = (page - 1) * page_size
         query = self.db.query(Photo)
         total = query.count()
-        photos = query.offset(skip).limit(page_size).all()
+        photos = query.order_by(Photo.uploaded_at.desc()).offset(skip).limit(page_size).all()
 
         total_pages = (total + page_size - 1) // page_size  # Ceiling division
 
@@ -255,7 +257,7 @@ class PhotoService:
 
         # Buscar fotos completas pelos IDs
         photo_ids = [photo_id for photo_id, _ in similar_photos]
-        photos = self.db.query(Photo).filter(Photo.id.in_(photo_ids)).all()
+        photos = self.db.query(Photo).filter(Photo.id.in_(photo_ids)).order_by(Photo.uploaded_at.desc()).all()
 
         # Criar mapa de ID -> foto
         photo_map = {photo.id: photo for photo in photos}
