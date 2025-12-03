@@ -29,11 +29,16 @@ def create_client(
 def get_clients(
     page: int = Query(1, ge=1, description="Página atual"),
     page_size: int = Query(12, ge=1, le=100, description="Itens por página"),
-    search: Optional[str] = Query(None, description="Buscar por nome, email ou CPF"),
+    search: Optional[str] = Query(None, description="Buscar por nome, email ou CPF (busca tradicional LIKE)"),
     db: Session = Depends(get_db)
 ):
     """
-    Listar clientes com paginação e busca
+    Listar clientes com paginação e busca tradicional
+
+    Este endpoint faz busca tradicional (LIKE) por substring em nome, email ou CPF.
+    Use este endpoint para navegação normal da lista de clientes.
+
+    Para busca inteligente por similaridade semântica, use /search/similar
     """
     client_service = ClientService(db)
     return client_service.get_clients(page=page, page_size=page_size, search=search)
@@ -106,5 +111,72 @@ def populate_clients(
     client_service = ClientService(db)
     try:
         return client_service.populate_clients(count)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/{client_id}/process", response_model=ClientResponse)
+def process_client(
+    client_id: int,
+    user_description: Optional[str] = Form(None, description="Descrição adicional para processamento com IA"),
+    db: Session = Depends(get_db)
+):
+    """
+    Processa um cliente com IA para gerar embedding e permitir busca por similaridade
+    """
+    client_service = ClientService(db)
+    try:
+        return client_service.process_client(client_id, user_description)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.get("/search/similar", response_model=PaginatedClientsResponse)
+def search_similar_clients(
+    q: Optional[str] = Query(None, description="Texto para busca por similaridade"),
+    client_id: Optional[int] = Query(None, description="ID do cliente de referência"),
+    page: int = Query(1, ge=1, description="Página atual"),
+    page_size: int = Query(12, ge=1, le=100, description="Itens por página"),
+    db: Session = Depends(get_db)
+):
+    """
+    Busca clientes similares por texto ou por outro cliente usando IA com paginação
+
+    Retorna o MESMO FORMATO do endpoint básico GET /, mas com similarity_score adicionado
+    aos objetos ClientResponse quando aplicável.
+
+    **Lógica de Filtragem Inteligente:**
+    - **Termos específicos** (ex: "Maria"): retorna apenas correspondências exatas (score = 1.0)
+    - **Termos genéricos** (ex: "cliente"): retorna top 6 resultados mais similares
+    - **Busca por cliente**: encontra clientes similares a um cliente de referência
+
+    **Formato de Resposta:** Mesmo que GET / (PaginatedClientsResponse)
+    - clients: Array de ClientResponse (com similarity_score opcional)
+    - total, page, page_size, total_pages, has_next, has_prev
+
+    Use este endpoint quando o usuário fizer uma busca específica no frontend.
+    """
+    if not q and not client_id:
+        raise HTTPException(status_code=400, detail="Deve fornecer 'q' (texto) ou 'client_id'")
+
+    client_service = ClientService(db)
+    try:
+        # Obter resultados da busca por similaridade
+        similar_results = client_service.search_similar_clients(q, client_id, page, page_size)
+
+        # Converter para o formato padrão, adicionando similarity_score
+        clients_with_scores = []
+        for item in similar_results["results"]:
+            client_response = item["client"]
+            client_response.similarity_score = item["similarity_score"]
+            clients_with_scores.append(client_response)
+
+        return {
+            "clients": clients_with_scores,
+            "total": similar_results["total"],
+            "page": similar_results["page"],
+            "page_size": similar_results["page_size"],
+            "total_pages": similar_results["total_pages"],
+            "has_next": similar_results["has_next"],
+            "has_prev": similar_results["has_prev"]
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

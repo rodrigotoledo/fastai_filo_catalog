@@ -159,3 +159,68 @@ class AIService:
         """
         query_embedding = self.text_to_embedding(query_text)
         return self.search_similar_images(query_embedding, embeddings, top_k)
+
+    def process_client_text(self, client_data: dict, user_description: str = None) -> Tuple[List[float], str]:
+        """
+        Processa dados de cliente e gera embedding + descrição usando CLIP
+        """
+        try:
+            # Criar texto descritivo conciso do cliente (limitar tamanho para evitar truncamento)
+            text_parts = []
+
+            # Informações principais (sempre incluir)
+            if client_data.get('name'):
+                text_parts.append(client_data['name'])
+
+            # Adicionar apenas cidade/estado do primeiro endereço (mais útil para busca)
+            addresses = client_data.get('addresses', [])
+            if addresses and addresses[0].get('city'):
+                addr = addresses[0]
+                location = f"{addr.get('city', '')}, {addr.get('state', '')}".strip(", ")
+                if location:
+                    text_parts.append(location)
+
+            # Adicionar nickname se existir (útil para busca informal)
+            if client_data.get('nickname'):
+                text_parts.append(client_data['nickname'])
+
+            # Combinar com descrição do usuário se fornecida
+            base_text = " ".join(text_parts)
+
+            if user_description and user_description.strip():
+                # Limitar descrição do usuário para não exceder limite de tokens
+                user_desc_short = user_description[:100]  # Limitar a 100 caracteres
+                combined_text = f"{base_text} {user_desc_short}".strip()
+            else:
+                combined_text = base_text
+
+            # Garantir que não está vazio
+            if not combined_text.strip():
+                combined_text = "Cliente sem informações"
+
+            # Limitar tamanho total para evitar problemas com CLIP
+            if len(combined_text) > 200:
+                combined_text = combined_text[:200] + "..."
+
+            # Gerar embedding usando CLIP
+            embedding = self.text_to_embedding(combined_text)
+
+            # Criar descrição da IA
+            ai_description = f"Cliente processado com IA. Dados: {base_text}"
+            if user_description:
+                ai_description += f" | Contexto adicional: {user_description}"
+
+            logger.info(f"Cliente '{client_data.get('name', 'Unknown')}' processado com sucesso")
+            return embedding, ai_description
+
+        except Exception as e:
+            logger.error(f"Erro ao processar cliente {client_data.get('name', 'Unknown')}: {str(e)}")
+            # Fallback
+            return self._simple_embedding(), f"Erro no processamento do cliente: {client_data.get('name', 'Unknown')}"
+
+    def find_similar_clients(self, query_text: str, embeddings: List[Tuple[int, List[float]]], top_k: int = 10) -> List[Tuple[int, float]]:
+        """
+        Busca clientes similares por texto
+        """
+        query_embedding = self.text_to_embedding(query_text)
+        return self.search_similar_images(query_embedding, embeddings, top_k)

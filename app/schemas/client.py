@@ -53,6 +53,10 @@ class ClientResponse(ClientBase):
     created_at: datetime
     updated_at: datetime
     addresses: List[ClientAddressResponse] = []
+    processed: bool = False
+    ai_description: Optional[str] = None
+    user_description: Optional[str] = None
+    similarity_score: Optional[float] = None  # Apenas presente em resultados de busca por similaridade
 
     class Config:
         from_attributes = True
@@ -66,3 +70,19 @@ class PaginatedClientsResponse(BaseModel):
     total_pages: int
     has_next: bool
     has_prev: bool
+
+# Similar clients search result
+class SimilarClientResult(BaseModel):
+    client: ClientResponse
+    similarity_score: float
+
+# Paginated similar clients response
+class PaginatedSimilarClientsResponse(BaseModel):
+    results: List[SimilarClientResult]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_next: bool
+    has_prev: bool
+    query: Optional[str] = None

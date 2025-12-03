@@ -2,6 +2,8 @@ from sqlmodel import SQLModel, Field, Relationship
 from sqlalchemy import ForeignKey
 from typing import Optional, List
 from datetime import datetime
+from sqlalchemy import Column
+from pgvector.sqlalchemy import Vector
 
 class ClientAddress(SQLModel, table=True):
     __tablename__ = 'client_addresses'
@@ -34,6 +36,12 @@ class Client(SQLModel, table=True):
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Campos para IA
+    processed: bool = Field(default=False)
+    embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(512)))
+    ai_description: Optional[str] = None
+    user_description: Optional[str] = None  # Descrição fornecida pelo usuário para busca
 
     # Relationship to addresses
     addresses: List[ClientAddress] = Relationship(back_populates="client", cascade_delete=True)
