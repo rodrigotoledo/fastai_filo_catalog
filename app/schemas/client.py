@@ -53,9 +53,6 @@ class ClientResponse(ClientBase):
     created_at: datetime
     updated_at: datetime
     addresses: List[ClientAddressResponse] = []
-    processed: bool = False
-    ai_description: Optional[str] = None
-    user_description: Optional[str] = None
     similarity_score: Optional[float] = None  # Apenas presente em resultados de busca por similaridade
 
     class Config:

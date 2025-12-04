@@ -6,7 +6,6 @@ from app.schemas.client import (
     ClientCreate, ClientUpdate, ClientResponse,
     ClientAddressCreate, ClientAddressResponse, ClientDocuments
 )
-from app.services.ai_service import AIService
 import re
 from datetime import datetime
 
@@ -70,9 +69,14 @@ class ClientService:
         if not birth_date_str:
             return None
         try:
+            # Tentar formato ISO primeiro
             return datetime.fromisoformat(birth_date_str)
         except ValueError:
-            return None
+            # Tentar formato brasileiro DD/MM/YYYY
+            try:
+                return datetime.strptime(birth_date_str, "%d/%m/%Y")
+            except ValueError:
+                return None
 
     def _client_to_response(self, client: Client) -> ClientResponse:
         """Converte Client model para ClientResponse schema"""
@@ -89,9 +93,6 @@ class ClientService:
             ),
             created_at=client.created_at,
             updated_at=client.updated_at,
-            processed=client.processed,
-            ai_description=client.ai_description,
-            user_description=client.user_description,
             addresses=[
                 ClientAddressResponse(
                     id=addr.id,
@@ -117,8 +118,8 @@ class ClientService:
         cpf = re.sub(r'\D', '', cpf)
         return f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}"
 
-    def create_client(self, client_data: ClientCreate, auto_process: bool = False) -> Client:
-        """Cria um novo cliente com endereços e opcionalmente processa com IA"""
+    def create_client(self, client_data: ClientCreate) -> Client:
+        """Cria um novo cliente com endereços"""
         # Validar CPF se fornecido
         if client_data.documents.cpf and not self._validate_cpf(client_data.documents.cpf):
             raise ValueError("CPF inválido")
@@ -151,15 +152,6 @@ class ClientService:
         self.db.add(client)
         self.db.commit()
         self.db.refresh(client)
-
-        # Processar com IA se solicitado
-        if auto_process:
-            try:
-                self.process_client(client.id, client_data.user_description if hasattr(client_data, 'user_description') else None)
-                self.db.refresh(client)  # Recarregar após processamento
-            except Exception as e:
-                # Não falhar a criação se o processamento der erro
-                print(f"Aviso: Não foi possível processar cliente com IA: {str(e)}")
 
         return self._client_to_response(client)
 
@@ -352,15 +344,6 @@ class ClientService:
             for client in clients:
                 self.db.refresh(client, ['addresses'])
 
-            # Processar clientes com IA em background (opcional)
-            # Por enquanto, vamos processar apenas alguns para teste
-            for i, client in enumerate(clients[:2]):  # Processar apenas os primeiros 2
-                try:
-                    print(f"Processando cliente {i+1}/{min(2, len(clients))} com IA...")
-                    self.process_client(client.id)
-                except Exception as e:
-                    print(f"Aviso: Não foi possível processar cliente {client.id}: {str(e)}")
-
         except Exception as e:
             self.db.rollback()
             raise ValueError(f"Erro ao criar clientes: {str(e)}")
@@ -368,161 +351,6 @@ class ClientService:
         # Ordenar por data de criação descendente (mais recentes primeiro)
         clients_sorted = sorted(clients, key=lambda c: c.created_at, reverse=True)
         return [self._client_to_response(client) for client in clients_sorted]
-
-    def process_client(self, client_id: int, user_description: str = None) -> Client:
-        """
-        Processa um cliente com IA para gerar embedding e descrição
-        """
-        client = self.db.query(Client).filter(Client.id == client_id).first()
-        if not client:
-            raise ValueError("Cliente não encontrado")
-
-        ai_service = AIService()
-
-        # Preparar dados do cliente para processamento
-        client_data = {
-            'name': client.name,
-            'nickname': client.nickname,
-            'email': client.email,
-            'phone': client.phone,
-            'cpf': client.cpf,
-            'birth_date': client.birth_date.strftime("%Y-%m-%d") if client.birth_date else None,
-            'addresses': [
-                {
-                    'street': addr.street,
-                    'number': addr.number,
-                    'neighborhood': addr.neighborhood,
-                    'city': addr.city,
-                    'state': addr.state
-                } for addr in client.addresses
-            ]
-        }
-
-        # Processar com IA
-        embedding, ai_description = ai_service.process_client_text(client_data, user_description)
-
-        # Atualizar cliente com dados da IA
-        client.embedding = embedding
-        client.ai_description = ai_description
-        client.user_description = user_description
-        client.processed = True
-
-        self.db.commit()
-        self.db.refresh(client)
-
-        return self._client_to_response(client)
-
-    def search_similar_clients(self, query_text: str = None, client_id: int = None, page: int = 1, page_size: int = 12):
-        """
-        Busca clientes similares por texto ou por outro cliente com paginação
-        """
-        ai_service = AIService()
-
-        if page < 1:
-            page = 1
-        if page_size < 1 or page_size > 100:
-            page_size = 12
-
-        # Buscar todos os clientes processados
-        processed_clients = self.db.query(Client).filter(
-            Client.processed == True,
-            Client.embedding.isnot(None)
-        ).all()
-
-        if not processed_clients:
-            return {
-                "results": [],
-                "total": 0,
-                "page": page,
-                "page_size": page_size,
-                "total_pages": 0,
-                "has_next": False,
-                "has_prev": False,
-                "query": query_text
-            }
-
-        # Preparar embeddings
-        embeddings = [(client.id, client.embedding) for client in processed_clients]
-
-        # Buscar por texto ou por cliente similar
-        if query_text:
-            # Buscar mais resultados para ter chance de aplicar boost e paginação
-            similar_clients = ai_service.find_similar_clients(query_text, embeddings, len(processed_clients))
-        elif client_id:
-            # Buscar cliente de referência
-            ref_client = self.db.query(Client).filter(Client.id == client_id).first()
-            if not ref_client or not ref_client.embedding:
-                raise ValueError("Cliente de referência não encontrado ou não processado")
-
-            similar_clients = ai_service.search_similar_images(ref_client.embedding, embeddings, len(processed_clients))
-        else:
-            raise ValueError("Deve fornecer query_text ou client_id")
-
-        # Aplicar boost e ordenar por score
-        boosted_results = []
-        for client_id, score in similar_clients:
-            # Encontrar o cliente correspondente
-            client = next((c for c in processed_clients if c.id == client_id), None)
-            if not client:
-                continue
-
-            boosted_score = score
-
-            # Boost para correspondência exata de texto
-            if query_text and client.name:
-                query_lower = query_text.lower()
-                name_lower = client.name.lower()
-
-                # Boost se o texto de busca estiver contido no nome
-                if query_lower in name_lower:
-                    boosted_score = min(1.0, score + 0.3)  # Adicionar 0.3 de boost, máximo 1.0
-                # Boost menor se palavras individuais coincidirem
-                elif any(word in name_lower for word in query_lower.split()):
-                    boosted_score = min(1.0, score + 0.1)  # Adicionar 0.1 de boost
-
-            boosted_results.append({
-                "client": client,
-                "similarity_score": boosted_score
-            })
-
-        # Ordenar por score decrescente
-        boosted_results.sort(key=lambda x: x["similarity_score"], reverse=True)
-
-        # Lógica inteligente de filtragem:
-        # 1. Se há correspondências exatas (score = 1.0), mostrar apenas essas
-        # 2. Caso contrário, mostrar os top 5-6 mais similares
-        exact_matches = [r for r in boosted_results if r["similarity_score"] >= 1.0]
-        if exact_matches:
-            # Mostrar apenas correspondências exatas
-            filtered_results = exact_matches
-        else:
-            # Mostrar top 5-6 mais similares para termos genéricos
-            filtered_results = boosted_results[:6]
-
-        # Aplicar paginação apenas nos resultados filtrados
-        total = len(filtered_results)
-        total_pages = (total + page_size - 1) // page_size
-        skip = (page - 1) * page_size
-        paginated_results = filtered_results[skip:skip + page_size]
-
-        # Converter para resposta
-        results = []
-        for item in paginated_results:
-            results.append({
-                "client": self._client_to_response(item["client"]),
-                "similarity_score": item["similarity_score"]
-            })
-
-        return {
-            "results": results,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": total_pages,
-            "has_next": page < total_pages,
-            "has_prev": page > 1,
-            "query": query_text
-        }
 
     def delete_client(self, client_id: int) -> bool:
         """Remove cliente e seus endereços"""
