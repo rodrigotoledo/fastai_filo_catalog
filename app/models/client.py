@@ -32,6 +32,7 @@ class Client(SQLModel, table=True):
     rg: Optional[str] = None
     birth_date: Optional[datetime] = None
     is_active: bool = Field(default=True)
+    processed: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

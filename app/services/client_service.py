@@ -368,7 +368,17 @@ class ClientService:
         if not client:
             raise ValueError("Cliente não encontrado")
 
-        client.is_active = not client.is_active
+        return self._client_to_response(client)
+
+    def process_client(self, client_id: int) -> Client:
+        """Processa cliente com IA (atualmente apenas marca como processado)"""
+        client = self.db.query(Client).filter(Client.id == client_id).first()
+        if not client:
+            raise ValueError("Cliente não encontrado")
+
+        # Por enquanto, apenas marca como processado
+        # Futuramente pode incluir processamento de IA específico para clientes
+        client.processed = True
         self.db.commit()
         self.db.refresh(client)
 

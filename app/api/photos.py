@@ -99,7 +99,7 @@ def search_photos_by_text(
     Search photos by text similarity using AI
     """
     photo_service = PhotoService(db)
-    return photo_service.search_similar_photos(query_text=q, limit=limit)
+    return photo_service.search_similar_photos_by_text(query_text=q, limit=limit)
 
 @router.get("/processing/stats")
 def get_processing_stats(db: Session = Depends(get_db)):
