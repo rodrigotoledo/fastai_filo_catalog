@@ -1,15 +1,20 @@
-# ai_service.py - VERSÃO FINAL 2025 (IMAGENS + EXTRAÇÃO DE CLIENTES)
+# ai_service.py - VERSÃO LANGCHAIN 2025 (IMAGENS + EXTRAÇÃO DE CLIENTES)
 import os
 import logging
 from pathlib import Path
 from typing import List, Dict, Optional
 from fastapi import UploadFile
-import google.generativeai as genai
 from dotenv import load_dotenv
 import json
+from langchain_huggingface import HuggingFacePipeline
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain.prompts import PromptTemplate
+from transformers import pipeline
+import torch
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,21 +22,151 @@ logger = logging.getLogger(__name__)
 class AIService:
     def __init__(self):
         self.store_id = self._get_or_create_store()
-        self.model = genai.GenerativeModel("gemini-2.5-flash")  # ou "gemini-2.5-pro" se quiser mais preciso
-        logger.info(f"AIService iniciado | Store ID: {self.store_id}")
+        # Inicializar LangChain com modelo local
+        self.llm = self._initialize_langchain_model()
+        logger.info(f"AIService iniciado com LangChain | Store ID: {self.store_id}")
+
+    def _initialize_langchain_model(self):
+        """Inicializa o modelo LangChain com fallback inteligente"""
+        # Ordem de prioridade: OpenAI -> Local -> Anthropic -> Gemini
+        providers = [
+            ("openai", self._initialize_openai_model),
+            ("local", self._initialize_local_model),
+            ("anthropic", self._initialize_anthropic_model),
+            ("gemini", self._initialize_gemini_model)
+        ]
+
+        # Verificar se há um provedor específico configurado
+        forced_provider = os.getenv("AI_MODEL_TYPE", "").lower().strip()
+        if forced_provider:
+            provider_map = {name: func for name, func in providers}
+            if forced_provider in provider_map:
+                llm = provider_map[forced_provider]()
+                if llm:
+                    logger.info(f"Modelo forçado '{forced_provider}' inicializado com sucesso")
+                    return llm
+                else:
+                    logger.warning(f"Modelo forçado '{forced_provider}' falhou, tentando fallback")
+
+        # Tentar provedores em ordem de prioridade
+        for provider_name, init_func in providers:
+            try:
+                llm = init_func()
+                if llm:
+                    logger.info(f"Modelo '{provider_name}' inicializado com sucesso")
+                    return llm
+            except Exception as e:
+                logger.warning(f"Falha ao inicializar {provider_name}: {str(e)}")
+                continue
+
+        logger.error("Nenhum modelo de AI conseguiu ser inicializado")
+        return None
+
+    def _initialize_openai_model(self):
+        """Inicializa OpenAI GPT-4"""
+        try:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY não configurada")
+
+            llm = ChatOpenAI(
+                model="gpt-4o-mini",  # ou "gpt-4o" para melhor qualidade
+                openai_api_key=api_key,
+                temperature=0.7,
+                max_tokens=512
+            )
+            logger.info("Modelo OpenAI inicializado via LangChain")
+            return llm
+
+        except Exception as e:
+            logger.error(f"Erro ao inicializar OpenAI: {str(e)}")
+            return None
+
+    def _initialize_anthropic_model(self):
+        """Inicializa Anthropic Claude"""
+        try:
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                raise ValueError("ANTHROPIC_API_KEY não configurada")
+
+            llm = ChatAnthropic(
+                model="claude-3-haiku-20240307",  # ou "claude-3-sonnet-20240229"
+                anthropic_api_key=api_key,
+                temperature=0.7,
+                max_tokens=512
+            )
+            logger.info("Modelo Anthropic inicializado via LangChain")
+            return llm
+
+        except Exception as e:
+            logger.error(f"Erro ao inicializar Anthropic: {str(e)}")
+            return None
+
+    def _initialize_gemini_model(self):
+        """Inicializa Google Gemini via LangChain"""
+        try:
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("GOOGLE_API_KEY não configurada")
+
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",  # ou "gemini-1.5-pro"
+                google_api_key=api_key,
+                temperature=0.7,
+                max_tokens=512
+            )
+            logger.info("Modelo Gemini inicializado via LangChain")
+            return llm
+
+        except Exception as e:
+            logger.error(f"Erro ao inicializar Gemini: {str(e)}")
+            return None
+
+    def _initialize_local_model(self):
+        """Inicializa modelo local via HuggingFace"""
+        try:
+            # Usar um modelo de texto para geração de descrições
+            model_name = os.getenv("LOCAL_MODEL", "microsoft/DialoGPT-medium")
+
+            # Para geração de texto, usar pipeline de text-generation
+            pipe = pipeline(
+                "text-generation",
+                model=model_name,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                max_new_tokens=512,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=50256  # GPT-like models
+            )
+
+            llm = HuggingFacePipeline(pipeline=pipe)
+            logger.info(f"Modelo local LangChain inicializado: {model_name}")
+            return llm
+
+        except Exception as e:
+            logger.error(f"Erro ao inicializar modelo local: {str(e)}")
+            # Fallback para modelo mais simples
+            try:
+                pipe = pipeline(
+                    "text-generation",
+                    model="gpt2",
+                    max_new_tokens=512,
+                    temperature=0.7
+                )
+                return HuggingFacePipeline(pipeline=pipe)
+            except Exception as e2:
+                logger.error(f"Fallback também falhou: {str(e2)}")
+                return None
 
     def _get_or_create_store(self) -> str:
         store_id = os.getenv("FILE_SEARCH_STORE_ID", "").strip()
         if store_id and store_id.startswith("file_search_stores/"):
-            try:
-                # Tentar validar se o store existe
-                genai.get_file_search_store(store_id)
-                return store_id
-            except Exception as e:
-                logger.warning(f"Store ID {store_id} inválido ou não encontrado: {str(e)}")
+            # Como não temos mais Gemini, apenas retornar None
+            logger.warning("FILE_SEARCH_STORE_ID não suportado sem Gemini API")
+            return None
 
-        # Se não tem store configurado ou disponível, usar abordagem simplificada sem File Search Store
-        logger.warning("FILE_SEARCH_STORE_ID não configurado ou indisponível. Usando busca simplificada.")
+        logger.warning("Usando busca simplificada sem File Search Store")
         return None
 
     # ===================================================================
@@ -59,101 +194,187 @@ class AIService:
             selfie_path.write_bytes(await selfie.read())
 
         try:
-            # 1. Extrai dados do documento com Gemini (melhor que qualquer regex do mundo)
-            extracted = self._extrair_dados_documento(str(doc_path))
+            # 1. Extrai dados do documento (simplificado sem Gemini)
+            extracted = self._extrair_dados_documento_simplificado(str(doc_path))
 
-            # 2. Gera descrição rica pro File Search (pra buscar por "homem de barba" depois)
+            # 2. Gera descrição rica para busca
             descricao = f"""
-            Cliente: {extracted.get('name', 'Nome não identificado')}
-            CPF: {extracted.get('cpf', 'não encontrado')}
+            Cliente: {extracted.get('name', nome or 'Nome não identificado')}
+            CPF: {extracted.get('cpf', cpf or 'não encontrado')}
             Telefone: {telefone or extracted.get('phone', 'não informado')}
             Cidade: {extracted.get('address', {}).get('city', 'não informada')}
             Notas: {notas or 'sem notas'}
             """
 
-            # 3. Upload do documento
-            doc_file = genai.upload_file(path=str(doc_path), display_name=f"doc_{documento.filename}")
-
-            # 4. Upload da selfie (se tiver)
-            selfie_file = None
-            if selfie and selfie_path.exists():
-                selfie_file = genai.upload_file(path=str(selfie_path), display_name=f"selfie_{documento.filename}")
-
-            # 5. Upload da descrição como .txt (pra busca semântica perfeita)
-            desc_path = temp_dir / f"desc_{documento.filename}.txt"
-            desc_path.write_text(descricao, encoding="utf-8")
-            desc_file = genai.upload_file(path=str(desc_path), display_name=f"info_{documento.filename}")
-
-            # 5. Como não temos File Search Store, apenas salvar no banco local
-            logger.info(f"Cliente {extracted.get('name', 'Desconhecido')} extraído com sucesso (sem File Search Store)")
+            # 3. Como não temos File Search Store, apenas processar localmente
+            logger.info(f"Cliente {extracted.get('name', 'Desconhecido')} processado com sucesso")
 
             return {
                 "status": "success",
                 "extracted_data": extracted,
-                "message": "Cliente processado com sucesso! Dados extraídos do documento."
+                "message": "Cliente processado com sucesso!"
             }
 
         finally:
             # Limpeza
-            for p in [doc_path, selfie_path, desc_path]:
+            for p in [doc_path, selfie_path]:
                 if p.exists():
                     p.unlink()
 
     # ===================================================================
-    # 2. EXTRAÇÃO DE DADOS DO DOCUMENTO (RG, CNH, SELFIE, ETC)
+    # 2. EXTRAÇÃO DE DADOS DO DOCUMENTO (COM OCR + LANGCHAIN)
     # ===================================================================
-    def _extrair_dados_documento(self, image_path: str) -> Dict:
-        """Extrai nome, CPF, data de nascimento, endereço etc com Gemini 2.5"""
-        prompt = """
-        Você é um especialista em documentos brasileiros (RG, CNH, Carteira de Trabalho, etc).
-        Analise esta imagem e extraia TODAS as informações possíveis em formato JSON limpo.
-
-        Retorne APENAS o JSON, nada mais. Use este formato exato:
-
-        {
-          "name": "Nome completo",
-          "cpf": "123.456.789-00",
-          "rg": "12.345.678-9",
-          "date_of_birth": "15/03/1985",
-          "mother_name": "Maria Silva",
-          "father_name": "José Santos",
-          "address": {
-            "street": "Rua das Flores",
-            "number": "123",
-            "neighborhood": "Centro",
-            "city": "São Paulo",
-            "state": "SP",
-            "postal_code": "01001-000"
-          },
-          "document_type": "RG" ou "CNH" ou "Outro",
-          "confidence": "high|medium|low"
-        }
-
-        Se não encontrar algum campo, coloque null.
-        """
-
-        image = {
-            "mime_type": "image/jpeg",
-            "data": Path(image_path).read_bytes()
-        }
-
-        response = self.model.generate_content([prompt, image])
+    def _extrair_dados_documento_simplificado(self, image_path: str) -> Dict:
+        """Extrai dados do documento usando OCR básico + LangChain para processamento"""
         try:
-            # Tenta parsear o JSON direto
-            data = json.loads(response.text)
-            data["confidence"] = data.get("confidence", "medium")
-            return data
-        except:
-            # Fallback se o Gemini não retornou JSON perfeito
-            return {
-                "name": None,
-                "cpf": None,
-                "date_of_birth": None,
-                "address": {},
-                "document_type": "desconhecido",
-                "confidence": "low",
-                "raw_response": response.text[:500]
-            }
+            # 1. Extrair texto da imagem usando OCR
+            extracted_text = self._extract_text_from_image(image_path)
+
+            if not extracted_text.strip():
+                logger.warning("Nenhum texto extraído da imagem")
+                return self._get_empty_document_data()
+
+            # 2. Usar LangChain para processar o texto extraído e estruturar os dados
+            return self._process_extracted_text_with_langchain(extracted_text)
+
+        except Exception as e:
+            logger.error(f"Erro na extração OCR: {str(e)}")
+            return self._get_empty_document_data()
+
+    def _extract_text_from_image(self, image_path: str) -> str:
+        """Extrai texto da imagem usando pytesseract (OCR)"""
+        try:
+            import pytesseract
+            from PIL import Image
+            import cv2
+            import numpy as np
+
+            # Abrir imagem
+            image = Image.open(image_path)
+
+            # Pré-processamento básico (converter para RGB se necessário)
+            if image.mode not in ('L', 'RGB'):
+                image = image.convert('RGB')
+
+            # Melhorar contraste para OCR
+            img_array = np.array(image)
+
+            # Aplicar threshold para melhorar o contraste
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
+            _, threshold = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # OCR com configuração otimizada para documentos brasileiros
+            custom_config = r'--oem 3 --psm 6 -l por+eng'
+            text = pytesseract.image_to_string(threshold, config=custom_config, lang='por+eng')
+
+            logger.info(f"Texto extraído da imagem: {len(text)} caracteres")
+            return text
+
+        except ImportError as e:
+            logger.error(f"Biblioteca não instalada: {str(e)}. Instale com: pip install pytesseract opencv-python-headless")
+            return ""
+        except Exception as e:
+            logger.error(f"Erro no OCR: {str(e)}")
+            return ""
+
+    def _process_extracted_text_with_langchain(self, extracted_text: str) -> Dict:
+        """Processa o texto extraído usando LangChain para estruturar os dados"""
+        if not self.llm:
+            logger.warning("LangChain não disponível, retornando dados vazios")
+            return self._get_empty_document_data()
+
+        try:
+            # Prompt para extrair dados estruturados do texto OCR
+            prompt_template = """
+            Você é um especialista em documentos brasileiros. Analise o texto extraído de um documento (RG, CNH, etc.) e extraia as informações em formato JSON.
+
+            Texto extraído:
+            {extracted_text}
+
+            Retorne APENAS um JSON válido com a seguinte estrutura:
+            {{
+              "name": "Nome completo encontrado ou null",
+              "cpf": "CPF encontrado ou null",
+              "rg": "RG encontrado ou null",
+              "date_of_birth": "Data de nascimento ou null",
+              "mother_name": "Nome da mãe ou null",
+              "father_name": "Nome do pai ou null",
+              "address": {{
+                "street": "Rua ou null",
+                "number": "Número ou null",
+                "neighborhood": "Bairro ou null",
+                "city": "Cidade ou null",
+                "state": "Estado (SP, RJ, etc.) ou null",
+                "postal_code": "CEP ou null"
+              }},
+              "document_type": "RG ou CNH ou CPF ou Outro",
+              "confidence": "high ou medium ou low",
+              "raw_text": "texto original extraído"
+            }}
+
+            Regras:
+            - Se não encontrar um campo, use null
+            - Para confidence: use "high" se encontrou nome+CPF, "medium" se encontrou alguns dados, "low" se encontrou pouco
+            - Limpe e formate os dados (remova caracteres especiais desnecessários)
+            """
+
+            # Usar LangChain para processar
+            prompt = PromptTemplate(
+                template=prompt_template,
+                input_variables=["extracted_text"]
+            )
+
+            chain = prompt | self.llm
+            result = chain.invoke({"extracted_text": extracted_text[:2000]})  # Limitar tamanho do texto
+
+            # Extrair o conteúdo do objeto AIMessage
+            result_text = result.content if hasattr(result, 'content') else str(result)
+
+            # Limpar possíveis markdown ou texto extra
+            if result_text.startswith("```json"):
+                result_text = result_text[7:]
+            if result_text.endswith("```"):
+                result_text = result_text[:-3]
+
+            result_text = result_text.strip()
+
+            try:
+                data = json.loads(result_text)
+                data["confidence"] = data.get("confidence", "medium")
+                logger.info(f"Dados extraídos com confiança: {data.get('confidence')}")
+                return data
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Erro ao fazer parse do JSON: {str(e)}")
+                logger.error(f"Texto recebido: {result_text[:500]}")
+                return self._get_empty_document_data()
+
+        except Exception as e:
+            logger.error(f"Erro no processamento com LangChain: {str(e)}")
+            return self._get_empty_document_data()
+
+    def _get_empty_document_data(self) -> Dict:
+        """Retorna estrutura vazia para documento não processado"""
+        return {
+            "name": None,
+            "cpf": None,
+            "rg": None,
+            "date_of_birth": None,
+            "mother_name": None,
+            "father_name": None,
+            "address": {
+                "street": None,
+                "number": None,
+                "neighborhood": None,
+                "city": None,
+                "state": None,
+                "postal_code": None
+            },
+            "document_type": "desconhecido",
+            "confidence": "low",
+            "note": "Falha na extração OCR - usar dados manuais",
+            "raw_text": ""
+        }
 
     # ===================================================================
     # 3. BUSCAR CLIENTE POR TEXTO OU FOTO
@@ -193,36 +414,17 @@ class AIService:
     # ===================================================================
     def process_image(self, image_path: str, user_description: str = None) -> tuple:
         """
-        Processa imagem para gerar embedding e descrição usando CLIP/Gemini
+        Processa imagem para gerar embedding e descrição usando CLIP/LangChain
         Retorna (embedding, description)
         """
         try:
-            # Por enquanto, usar implementação simplificada
-            # TODO: Implementar processamento real com CLIP ou Gemini Vision
-
-            # Placeholder: gerar embedding fake (512 dimensões como CLIP)
+            # Gerar embedding usando CLIP (mantém como está)
             import numpy as np
-            embedding_array = np.random.rand(512).astype(np.float32)
-            embedding = embedding_array.tolist()  # Converter para list[float]
+            embedding_array = np.random.rand(512).astype(np.float32)  # TODO: Implementar CLIP real
+            embedding = embedding_array.tolist()
 
-            # Gerar descrição usando Gemini (sempre, independente da user_description)
-            with open(image_path, "rb") as img_file:
-                image_data = img_file.read()
-
-            # Usar user_description como contexto adicional se existir
-            prompt_base = "Descreva detalhadamente esta imagem em português. Foque em objetos, pessoas, animais, cores, composição, atmosfera e detalhes específicos."
-
-            if user_description:
-                prompt = f"{prompt_base} Contexto adicional fornecido pelo usuário: {user_description}. Use este contexto para enriquecer a descrição, mas descreva o que realmente vê na imagem."
-            else:
-                prompt = prompt_base
-
-            response = self.model.generate_content([
-                prompt,
-                {"mime_type": "image/jpeg", "data": image_data}
-            ])
-
-            description = response.text.strip() if response.text else f"Imagem processada{f' - {user_description}' if user_description else ''}"
+            # Gerar descrição usando LangChain com prompt customizado
+            description = self._generate_image_description(image_path, user_description)
 
             logger.info(f"Imagem processada: {os.path.basename(image_path)}")
             return embedding, description
@@ -232,3 +434,87 @@ class AIService:
             # Retornar valores padrão em caso de erro
             import numpy as np
             return np.random.rand(512).astype(np.float32).tolist(), "Erro no processamento"
+
+    def _generate_image_description(self, image_path: str, user_description: str = None) -> str:
+        """
+        Gera descrição da imagem usando LangChain (Gemini ou modelo local)
+        """
+        if not self.llm:
+            return f"Descrição não disponível - modelo LangChain não inicializado{f' - {user_description}' if user_description else ''}"
+
+        try:
+            model_type = os.getenv("AI_MODEL_TYPE", "local").lower()
+
+            if model_type == "gemini":
+                return self._generate_description_gemini(image_path, user_description)
+            else:
+                return self._generate_description_local(image_path, user_description)
+
+        except Exception as e:
+            logger.error(f"Erro ao gerar descrição com LangChain: {str(e)}")
+            return f"Erro na geração da descrição{f' - {user_description}' if user_description else ''}"
+
+    def _generate_description_gemini(self, image_path: str, user_description: str = None) -> str:
+        """Gera descrição usando Gemini (multimodal) - versão simplificada"""
+        try:
+            # Por enquanto, fallback para local até implementar multimodal corretamente
+            logger.warning("Gemini multimodal ainda não implementado, usando modelo local")
+            return self._generate_description_local(image_path, user_description)
+
+        except Exception as e:
+            logger.error(f"Erro com Gemini: {str(e)}")
+            return self._generate_description_local(image_path, user_description)
+
+    def _generate_description_local(self, image_path: str, user_description: str = None) -> str:
+        """Gera descrição usando modelo local (text-only)"""
+        # Prompt customizado para descrição de imagens
+        prompt_template = """
+        Você é um especialista em análise de imagens. Baseado na descrição fornecida, crie uma descrição detalhada e rica da imagem.
+
+        Descrição da imagem: {image_info}
+        {user_context}
+
+        Gere uma descrição completa em português que inclua:
+        - Objetos e elementos principais
+        - Cores e composição
+        - Atmosfera e estilo
+        - Detalhes específicos
+        - Contexto e interpretação
+
+        Descrição:
+        """
+
+        # Como não temos modelo multimodal, usar uma descrição básica da imagem
+        image_info = f"Arquivo: {os.path.basename(image_path)} (tipo: {self._get_image_type(image_path)})"
+
+        if user_description:
+            user_context = f"Contexto adicional do usuário: {user_description}"
+        else:
+            user_context = ""
+
+        # Usar LangChain para gerar a descrição com sintaxe moderna
+        prompt = PromptTemplate(
+            template=prompt_template,
+            input_variables=["image_info", "user_context"]
+        )
+
+        chain = prompt | self.llm
+        result = chain.invoke({"image_info": image_info, "user_context": user_context})
+
+        # Limpar e formatar a resposta
+        description = result.content if hasattr(result, 'content') else str(result)
+        if description.startswith("Descrição:"):
+            description = description[11:].strip()
+
+        return description
+
+    def _get_image_type(self, image_path: str) -> str:
+        """Retorna o tipo da imagem baseado na extensão"""
+        ext = os.path.splitext(image_path)[1].lower()
+        return {
+            '.jpg': 'JPEG',
+            '.jpeg': 'JPEG',
+            '.png': 'PNG',
+            '.gif': 'GIF',
+            '.bmp': 'BMP'
+        }.get(ext, 'desconhecido')

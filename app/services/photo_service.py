@@ -220,22 +220,6 @@ class PhotoService:
 
         return photos
 
-    def get_photos(self, page: int = 1, page_size: int = 12):
-        """
-        Busca fotos com paginação
-        """
-        offset = (page - 1) * page_size
-        total = self.db.query(Photo).count()
-        photos = self.db.query(Photo).order_by(Photo.uploaded_at.desc()).offset(offset).limit(page_size).all()
-
-        return {
-            "photos": photos,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size
-        }
-
     def get_photo(self, photo_id: int) -> Photo:
         """
         Busca uma foto específica por ID
@@ -244,17 +228,54 @@ class PhotoService:
 
     def get_processing_stats(self):
         """
-        Retorna estatísticas de processamento
+        Retorna estatísticas detalhadas de processamento
         """
+        from datetime import datetime, timedelta
+
         total_photos = self.db.query(Photo).count()
         processed_photos = self.db.query(Photo).filter(Photo.processed == True).count()
         unprocessed_photos = total_photos - processed_photos
 
+        # Calcular porcentagem
+        processing_percentage = round((processed_photos / total_photos * 100) if total_photos > 0 else 0, 2)
+
+        # Pegar informações das últimas fotos processadas
+        recent_processed = self.db.query(Photo).filter(Photo.processed == True)\
+            .order_by(Photo.uploaded_at.desc())\
+            .limit(5)\
+            .all()
+
+        recent_photos = []
+        for photo in recent_processed:
+            recent_photos.append({
+                "id": photo.id,
+                "filename": photo.filename,
+                "uploaded_at": photo.uploaded_at.isoformat() if photo.uploaded_at else None,
+                "has_description": photo.description is not None and len(photo.description.strip()) > 0,
+                "has_embedding": photo.embedding is not None and len(photo.embedding) > 0
+            })
+
+        # Estatísticas de tempo (aproximado)
+        avg_processing_time_per_photo = 15  # segundos estimados por foto
+        estimated_remaining_time = unprocessed_photos * avg_processing_time_per_photo
+
+        # Status do processamento
+        status = "idle"
+        if unprocessed_photos > 0:
+            status = "processing"
+        elif processed_photos == total_photos and total_photos > 0:
+            status = "completed"
+
         return {
+            "status": status,
             "total_photos": total_photos,
             "processed_photos": processed_photos,
             "unprocessed_photos": unprocessed_photos,
-            "processing_percentage": round((processed_photos / total_photos * 100) if total_photos > 0 else 0, 2)
+            "processing_percentage": processing_percentage,
+            "estimated_remaining_seconds": estimated_remaining_time,
+            "estimated_remaining_time": str(timedelta(seconds=estimated_remaining_time)),
+            "recent_processed_photos": recent_photos,
+            "last_updated": datetime.now().isoformat()
         }
 
     async def populate_photo(self, term: str, count: int = 1) -> List[Photo]:
@@ -510,21 +531,6 @@ class PhotoService:
             "search_method": "embedding_search"
         }
 
-    def get_processing_stats(self):
-        """
-        Retorna estatísticas de processamento
-        """
-        total_photos = self.db.query(Photo).count()
-        processed_photos = self.db.query(Photo).filter(Photo.processed == True).count()
-        unprocessed_photos = total_photos - processed_photos
-
-        return {
-            "total_photos": total_photos,
-            "processed_photos": processed_photos,
-            "unprocessed_photos": unprocessed_photos,
-            "processing_percentage": round((processed_photos / total_photos * 100) if total_photos > 0 else 0, 2)
-        }
-
     def get_photo(self, photo_id: int) -> Photo:
         """
         Busca uma foto específica por ID
@@ -545,15 +551,23 @@ class PhotoService:
         """
         return self.db.query(Photo).filter(Photo.id == photo_id).first()
 
-    def get_photos(self, page: int = 1, page_size: int = 12) -> Dict:
+    def get_photos(self, page: int = 1, page_size: int = 12, processed_only: bool = False) -> Dict:
         """
-        Busca fotos com paginação
+        Busca fotos com paginação. Opcionalmente filtra apenas fotos processadas.
         """
         offset = (page - 1) * page_size
-        photos_query = self.db.query(Photo).offset(offset).limit(page_size).all()
-        total_photos = self.db.query(Photo).count()
+
+        # Base query
+        query = self.db.query(Photo)
+
+        # Aplicar filtro se solicitado
+        if processed_only:
+            query = query.filter(Photo.processed == True)
+
+        photos_query = query.offset(offset).limit(page_size).all()
+        total_photos = query.count()
         total_pages = (total_photos + page_size - 1) // page_size
-        
+
         # Converter objetos Photo para dicionários serializáveis
         photos_data = []
         for photo in photos_query:
@@ -564,7 +578,7 @@ class PhotoService:
                 "file_path": photo.file_path,
                 "file_size": photo.file_size,
                 "content_type": photo.content_type,
-                "uploaded_at": photo.uploaded_at.isoformat(),
+                "uploaded_at": photo.uploaded_at.isoformat() if photo.uploaded_at else None,
                 "processed": photo.processed,
                 "description": photo.description,
                 "user_description": photo.user_description
@@ -577,5 +591,6 @@ class PhotoService:
             "page_size": page_size,
             "total_pages": total_pages,
             "has_next": page < total_pages,
-            "has_prev": page > 1
+            "has_prev": page > 1,
+            "processed_only": processed_only
         }
