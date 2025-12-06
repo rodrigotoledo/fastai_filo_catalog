@@ -4,10 +4,13 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import uuid
+import logging
 from app.db.database import get_db
 from app.services.photo_service import PhotoService
 from app.models.photo import Photo
 from app.schemas.photo import PhotoResponse, PaginatedPhotosResponse, SearchResponse, PhotoUploadRequest, SearchResultResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -34,10 +37,19 @@ async def upload_photos(
             # Add to visual search index
             try:
                 visual_search = VisualSearchService()
-                # Use the photo data directly
+
+                # Check if agent processing is enabled
+                use_agent = os.getenv("USE_LANGCHAIN_AGENTS", "false").lower() == "true"
+
                 abs_file_path = os.path.join(os.getcwd(), photo.file_path)
                 if os.path.exists(abs_file_path):
-                    visual_search.add_image(abs_file_path, photo.id, user_description)
+                    if use_agent:
+                        # Use agent for intelligent processing
+                        result_id = visual_search.add_image_with_agent(abs_file_path, photo.id, description)
+                        print(f"Agent processed image {file.filename}: {result_id}")
+                    else:
+                        # Use direct processing
+                        visual_search.add_image(abs_file_path, photo.id, description)
                 else:
                     print(f"Warning: File not found for visual search: {abs_file_path}")
             except Exception as e:
@@ -104,6 +116,98 @@ def get_photo(photo_id: int, db: Session = Depends(get_db)):
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
     return photo
+
+@router.get("/search/smart", response_model=SearchResponse)
+def search_photos_with_agent(
+    q: str = Query(..., description="Search query text"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(12, ge=1, le=50, description="Number of results per page"),
+    db: Session = Depends(get_db)
+):
+    """
+    Search photos using LangChain agent for intelligent query processing
+    """
+    logger.info(f"🔍 SMART SEARCH ENDPOINT CALLED with query: {q}")
+    try:
+        from app.services.langchain_agents import ImageProcessingAgent
+        from app.services.ai_service import AIService
+        from app.services.visual_search_service import VisualSearchService
+
+        photo_service = PhotoService(db)
+        visual_search = VisualSearchService()
+        ai_service = AIService()
+
+        if not ai_service.llm:
+            logger.warning("❌ LLM not available, falling back to regular search")
+            return search_photos_by_text(q, page, page_size, db)
+
+        # Create agent for intelligent search
+        logger.info(f"🤖 Creating ImageProcessingAgent...")
+        agent = ImageProcessingAgent(ai_service.llm, visual_search, ai_service, photo_service)
+        logger.info(f"🤖 Agent created successfully")
+
+        # Agent analyzes query and decides search strategy
+        search_task = f"""
+        Você é um especialista em busca de imagens. Analise esta consulta e encontre as imagens mais relevantes: "{q}"
+
+        SUA MISSÃO:
+        1. Entenda a intenção da consulta (o que o usuário está procurando?)
+        2. Expanda a consulta com sinônimos se necessário (português/inglês)
+        3. Escolha a melhor estratégia de busca:
+           - "semantic": busca semântica padrão
+           - "expanded": expandir com sinônimos para mais resultados
+        4. Use a ferramenta smart_search para executar a busca
+        5. Analise os resultados e refine se necessário
+
+        SEJA INTELIGENTE SOBRE:
+        - Termos em português vs inglês
+        - Múltiplos significados de palavras
+        - Contexto e intenção
+        - Relevância visual vs textual
+
+        Execute a busca usando a ferramenta smart_search e retorne os melhores resultados.
+        """
+
+        logger.info(f"🤖 About to execute agent...")
+        try:
+            # Agent decides and executes the search
+            logger.info(f"🤖 Executing agent search for query: {q}")
+            agent_result = agent.agent_executor.invoke({"input": search_task})
+            logger.info(f"🤖 Agent result: {agent_result}")
+
+            # Extract search results from agent response
+            # For now, fallback to direct search while we parse agent results
+            all_results = visual_search.search_by_text(q, top_k=1000)
+
+        except Exception as agent_error:
+            logger.warning(f"Agent search failed, using direct search: {agent_error}")
+            logger.warning(f"⚠️ Agent failed: {agent_error}")
+            # Fallback to direct search
+            all_results = visual_search.search_by_text(q, top_k=1000)
+
+        # Paginate results
+        total_results = len(all_results)
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_results = all_results[start_idx:end_idx]
+
+        # Fetch Photo objects
+        search_results = []
+        for result in paginated_results:
+            photo = photo_service.get_photo(result["photo_id"])
+            if photo:
+                search_results.append(SearchResultResponse(
+                    photo=PhotoResponse.from_orm(photo),
+                    similarity_score=result["similarity"]
+                ))
+
+        return SearchResponse(results=search_results)
+
+    except ImportError:
+        # Fallback if agents not available
+        return search_photos_by_text(q, page, page_size, db)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent search failed: {str(e)}")
 
 @router.get("/search/text", response_model=SearchResponse)
 def search_photos_by_text(
@@ -288,6 +392,54 @@ def get_processing_stats(db: Session = Depends(get_db)):
     """
     photo_service = PhotoService(db)
     return photo_service.get_processing_stats()
+
+@router.post("/process-with-agent")
+async def process_image_with_agent(
+    file: UploadFile = File(...),
+    description: Optional[str] = Form(None, description="Descrição opcional da imagem"),
+    db: Session = Depends(get_db)
+):
+    """
+    Process image using LangChain agent for intelligent analysis
+    """
+    try:
+        from app.services.langchain_agents import ImageProcessingAgent
+        from app.services.ai_service import AIService
+        from app.services.visual_search_service import VisualSearchService
+
+        # Save file temporarily
+        temp_path = f"/tmp/{uuid.uuid4()}_{file.filename}"
+        with open(temp_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+
+        # Initialize services
+        ai_service = AIService()
+        visual_search = VisualSearchService()
+
+        if not ai_service.llm:
+            raise HTTPException(status_code=500, detail="LLM not available for agent processing")
+
+        # Create and use agent
+        agent = ImageProcessingAgent(ai_service.llm, visual_search, ai_service)
+        result = agent.process_image(temp_path, description)
+
+        # Clean up temp file
+        os.remove(temp_path)
+
+        return {
+            "success": result["success"],
+            "agent_response": result.get("agent_response", ""),
+            "processing_details": result
+        }
+
+    except ImportError:
+        raise HTTPException(status_code=500, detail="LangChain agents not available")
+    except Exception as e:
+        # Clean up on error
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise HTTPException(status_code=500, detail=f"Agent processing failed: {str(e)}")
 
 # ============================================================================
 # SEARCH ENDPOINTS

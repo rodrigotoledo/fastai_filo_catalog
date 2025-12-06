@@ -169,62 +169,11 @@ class AIService:
         logger.warning("Usando busca simplificada sem File Search Store")
         return None
 
-    # ===================================================================
-    # 1. ADICIONAR CLIENTE (foto do documento + selfie + dados opcionais)
-    # ===================================================================
-    async def adicionar_cliente(
-        self,
-        documento: UploadFile,           # foto do RG, CNH, etc
-        selfie: Optional[UploadFile] = None,
-        nome: Optional[str] = None,
-        cpf: Optional[str] = None,
-        telefone: Optional[str] = None,
-        notas: Optional[str] = None
-    ) -> Dict:
-        """Adiciona cliente com extração automática de dados + busca por foto"""
-        temp_dir = Path("temp_clientes")
-        temp_dir.mkdir(exist_ok=True)
-
-        doc_path = temp_dir / documento.filename
-        selfie_path = temp_dir / (selfie.filename if selfie else "sem_selfie.jpg")
-
-        # Salva arquivos temporariamente
-        doc_path.write_bytes(await documento.read())
-        if selfie:
-            selfie_path.write_bytes(await selfie.read())
-
-        try:
-            # 1. Extrai dados do documento (simplificado sem Gemini)
-            extracted = self._extrair_dados_documento_simplificado(str(doc_path))
-
-            # 2. Gera descrição rica para busca
-            descricao = f"""
-            Cliente: {extracted.get('name', nome or 'Nome não identificado')}
-            CPF: {extracted.get('cpf', cpf or 'não encontrado')}
-            Telefone: {telefone or extracted.get('phone', 'não informado')}
-            Cidade: {extracted.get('address', {}).get('city', 'não informada')}
-            Notas: {notas or 'sem notas'}
-            """
-
-            # 3. Como não temos File Search Store, apenas processar localmente
-            logger.info(f"Cliente {extracted.get('name', 'Desconhecido')} processado com sucesso")
-
-            return {
-                "status": "success",
-                "extracted_data": extracted,
-                "message": "Cliente processado com sucesso!"
-            }
-
-        finally:
-            # Limpeza
-            for p in [doc_path, selfie_path]:
-                if p.exists():
-                    p.unlink()
 
     # ===================================================================
     # 2. EXTRAÇÃO DE DADOS DO DOCUMENTO (COM OCR + LANGCHAIN)
     # ===================================================================
-    def _extrair_dados_documento_simplificado(self, image_path: str) -> Dict:
+    def _extract_data_simplified_document(self, image_path: str) -> Dict:
         """Extrai dados do documento usando OCR básico + LangChain para processamento"""
         try:
             # 1. Extrair texto da imagem usando OCR
@@ -375,28 +324,6 @@ class AIService:
             "note": "Falha na extração OCR - usar dados manuais",
             "raw_text": ""
         }
-
-    # ===================================================================
-    # 3. BUSCAR CLIENTE POR TEXTO OU FOTO
-    # ===================================================================
-    def buscar_cliente(self, query: str, max_results: int = 10) -> List[Dict]:
-        """
-        Busca por: "João Silva", "CPF 123.456.789-00", "homem de barba", "mulher loira de óculos"
-        Como não temos File Search Store, retorna lista vazia por enquanto
-        """
-        logger.info(f"Busca por '{query}' - File Search Store não disponível")
-        return []
-
-    # ===================================================================
-    # 4. BUSCA POR SELFIE (reverse image search)
-    # ===================================================================
-    async def buscar_por_selfie(self, selfie: UploadFile) -> List[Dict]:
-        """
-        Busca por selfie (reverse image search)
-        Como não temos File Search Store, retorna lista vazia por enquanto
-        """
-        logger.info("Busca por selfie - File Search Store não disponível")
-        return []
 
     # ===================================================================
     # 5. BUSCA NO FILE SEARCH STORE (stub - não disponível na versão atual)

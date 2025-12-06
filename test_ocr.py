@@ -41,7 +41,7 @@ def test_ocr():
             if images:
                 test_image = os.path.join(upload_dir, images[0])
                 print(f"Testing OCR with: {test_image}")
-                extracted_data = ai_service._extrair_dados_documento_simplificado(test_image)
+                extracted_data = ai_service._extract_data_simplified_document(test_image)
                 print(f"✓ OCR result: {extracted_data}")
             else:
                 print("✗ No images found in uploads directory")

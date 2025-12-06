@@ -85,7 +85,40 @@ class VisualSearchService:
         logger.warning("No LLM available - captions will be basic")
         return None
 
-    def add_image(self, image_path: str, photo_id: int, user_description: str = None, tags: List[str] = None) -> str:
+    def add_image_with_agent(self, image_path: str, photo_id: int, user_description: str = None, tags: List[str] = None) -> str:
+        """
+        Add image using LangChain agent for intelligent processing
+        """
+        try:
+            from .langchain_agents import ImageProcessingAgent
+            from .ai_service import AIService
+
+            # Initialize agent if not exists
+            if not hasattr(self, '_image_agent'):
+                ai_service = AIService()
+                if ai_service.llm:
+                    self._image_agent = ImageProcessingAgent(ai_service.llm, self, ai_service)
+                else:
+                    # Fallback to direct processing
+                    return self.add_image(image_path, photo_id, user_description, tags)
+
+            # Use agent for processing
+            result = self._image_agent.process_image(image_path, user_description)
+
+            if result["success"]:
+                logger.info(f"Agent processed image successfully: {result['agent_response']}")
+                # Extract photo_id from agent response or use provided
+                return f"agent_processed_{photo_id}"
+            else:
+                logger.warning(f"Agent failed, using fallback: {result.get('error', 'Unknown error')}")
+                return self.add_image(image_path, photo_id, user_description, tags)
+
+        except ImportError:
+            logger.warning("LangChain agents not available, using direct processing")
+            return self.add_image(image_path, photo_id, user_description, tags)
+        except Exception as e:
+            logger.error(f"Error in agent processing: {str(e)}")
+            return self.add_image(image_path, photo_id, user_description, tags)
         """
         Add an image to the search index with rich AI-generated caption.
 
@@ -166,14 +199,25 @@ class VisualSearchService:
             Be as specific as possible. This description will be used for search.
             """
 
-            from langchain_core.messages import HumanMessage
-            message = HumanMessage(content=[
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": f"data:image/jpeg;base64,{image_b64}"}
-            ])
+            # Simplified caption generation without multimodal
+            prompt_text = f"""
+            Describe this image in maximum detail in Brazilian Portuguese.
+            Include:
+            - Main and secondary objects
+            - Exact colors (e.g., navy blue, Ferrari red)
+            - Visible text (exactly as written)
+            - Brand, model, defects, condition
+            - People: gender, approximate age, clothing, expression
+            - Context: environment, lighting, approximate date if visible
+            - Any detail that differentiates this image from similar ones
 
-            response = self.llm.invoke([message])
-            return response.content.strip()
+            {f'Additional context: {user_context}' if user_context else ''}
+
+            Be as specific as possible. This description will be used for search.
+            """
+
+            response = self.llm.invoke(prompt_text)
+            return response.content.strip() if hasattr(response, 'content') else str(response)
 
         except Exception as e:
             logger.error(f"Failed to generate rich caption: {e}")
@@ -389,31 +433,3 @@ class VisualSearchService:
         except Exception as e:
             logger.warning(f"Re-ranking failed: {e}")
             return candidates
-
-    def get_collection_stats(self) -> Dict:
-        """Get statistics about the image collection"""
-        try:
-            count = self.collection.count()
-            return {
-                "total_images": count,
-                "collection_name": "images",
-                "embedding_dimensions": 512,  # CLIP embedding size
-                "status": "active"
-            }
-        except Exception as e:
-            logger.error(f"Failed to get collection stats: {e}")
-            return {"error": str(e)}
-
-    def clear_collection(self):
-        """Clear all images from the collection"""
-        try:
-            self.client.delete_collection("images")
-            # Recreate collection
-            self.collection = self.client.create_collection(
-                name="images",
-                metadata={"hnsw:space": "cosine"}
-            )
-            logger.info("Image collection cleared")
-        except Exception as e:
-            logger.error(f"Failed to clear collection: {e}")
-            raise

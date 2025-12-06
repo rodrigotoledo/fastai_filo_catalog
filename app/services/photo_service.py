@@ -79,50 +79,6 @@ class PhotoService:
 
         return photo
 
-    def search_similar_photos_by_text(self, query_text: str = None, limit: int = 10) -> Dict:
-        """
-        Busca fotos por texto nas descrições (versão simplificada sem File Search Store)
-        """
-        if not query_text:
-            raise HTTPException(status_code=400, detail="Query text is required for search")
-
-        # Busca simples: procurar fotos cuja descrição contenha o texto da busca
-        query_lower = query_text.lower()
-
-        # Buscar fotos que contenham o termo na descrição
-        matching_photos = []
-        all_photos = self.db.query(Photo).all()
-
-        for photo in all_photos:
-            if photo.user_description and query_lower in photo.user_description.lower():
-                matching_photos.append({
-                    "photo": photo,
-                    "similarity_score": 1.0  # Score máximo para correspondências
-                })
-
-        # Se não encontrou correspondências exatas, buscar por palavras individuais
-        if not matching_photos:
-            for photo in all_photos:
-                if photo.user_description:
-                    desc_lower = photo.user_description.lower()
-                    # Verificar se alguma palavra da query está na descrição
-                    if any(word in desc_lower for word in query_lower.split()):
-                        matching_photos.append({
-                            "photo": photo,
-                            "similarity_score": 0.9  # Score menor para palavras individuais
-                        })
-
-        # Ordenar por score e limitar resultados
-        matching_photos.sort(key=lambda x: x["similarity_score"], reverse=True)
-        matching_photos = matching_photos[:limit]
-
-        return {
-            "results": matching_photos,
-            "total": len(matching_photos),
-            "message": f"Encontradas {len(matching_photos)} fotos que correspondem à busca",
-            "search_method": "text_search"
-        }
-
     async def populate_photo(self, term: str, count: int = 1) -> List[Photo]:
         """
         Baixa múltiplas imagens do LoremFlickr e salva como fotos
