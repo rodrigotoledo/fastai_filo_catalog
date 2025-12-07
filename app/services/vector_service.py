@@ -32,8 +32,8 @@ class VectorService:
                 # Cache the new embedding
                 self.cache.set_embedding(query, query_embedding)
 
-            # Minimum similarity threshold for results
-            min_similarity_threshold = 0.3  # Lower threshold since we have relevance boosting
+            # Minimum similarity threshold for results - higher for better quality
+            min_similarity_threshold = 0.6  # Increased from 0.3 for higher quality results
 
             # 2. Search in PostgreSQL using pgvector cosine distance
             # Get more results initially for better re-ranking
@@ -48,7 +48,7 @@ class VectorService:
             # Format results with intelligent re-ranking
             filtered_results = []
             for photo, distance in results:
-                similarity_score = max(-1.0, min(1.0, 1.0 - distance))
+                similarity_score = max(0.0, min(1.0, 1.0 - distance))  # Normal similarity score
 
                 # Calculate relevance boost based on multiple factors
                 relevance_boost = self._calculate_relevance_boost(query, photo.description or "", photo.original_filename)
@@ -122,7 +122,7 @@ class VectorService:
                         if any(kw in query_lower for kw in keywords):
                             boost += 0.1
 
-            return min(boost, 1.0)  # Cap at 1.0
+            return min(boost, 0.8)  # Cap at 0.8 to keep scores reasonable
 
         except Exception as e:
             logger.error(f"Error calculating relevance boost: {e}")
@@ -166,37 +166,3 @@ class VectorService:
         except Exception as e:
             logger.error(f"Error generating justification: {e}")
             return "Match found"
-        """
-        Search for photos using a pre-computed embedding vector.
-        Returns list of dicts with 'photo_id', 'similarity', and 'justification'.
-        """
-        try:
-            # Search in PostgreSQL using pgvector cosine distance
-            from sqlalchemy import func
-            results = self.db.query(
-                Photo,
-                Photo.image_embedding.cosine_distance(query_embedding).label('distance')
-            ).filter(
-                Photo.image_embedding.isnot(None)  # Only photos with image embeddings
-            ).order_by(
-                Photo.image_embedding.cosine_distance(query_embedding)
-            ).limit(limit).all()
-
-            # Format results with similarity score
-            formatted_results = []
-            for photo, distance in results:
-                similarity_score = 1.0 - distance
-                justification = f"Visual similarity: {similarity_score:.3f} (based on CLIP image embeddings)"
-                formatted_results.append({
-                    'photo_id': photo.id,
-                    'similarity': similarity_score,
-                    'justification': justification
-                })
-
-            return formatted_results
-        except Exception as e:
-            logger.error(f"Vector search by embedding failed: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"Vector search failed: {e}")
-            return []
