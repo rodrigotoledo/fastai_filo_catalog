@@ -263,8 +263,10 @@ def search_photos_with_agent(
         for result in paginated_results:
             photo = photo_service.get_photo(result["photo_id"])
             if photo:
+                photo_response = PhotoResponse.from_orm(photo)
+                photo_response.justification = result.get("justification", "Semantic similarity match")
                 search_results.append(SearchResultResponse(
-                    photo=PhotoResponse.from_orm(photo),
+                    photo=photo_response,
                     similarity_score=result["similarity"]
                 ))
 
@@ -302,8 +304,10 @@ def search_photos_by_text(
         for result in paginated_results:
             photo = photo_service.get_photo(result["photo_id"])
             if photo:
+                photo_response = PhotoResponse.from_orm(photo)
+                photo_response.justification = result.get("justification", "Semantic similarity match")
                 search_results.append(SearchResultResponse(
-                    photo=PhotoResponse.from_orm(photo),
+                    photo=photo_response,
                     similarity_score=result["similarity"]
                 ))
 
@@ -354,8 +358,10 @@ async def search_photos_by_image(
         for result in paginated_results:
             photo = photo_service.get_photo(result["photo_id"])
             if photo:
+                photo_response = PhotoResponse.from_orm(photo)
+                photo_response.justification = result.get("justification", "Visual similarity match")
                 search_results.append(SearchResultResponse(
-                    photo=PhotoResponse.from_orm(photo),
+                    photo=photo_response,
                     similarity_score=result["similarity"]
                 ))
 
@@ -535,8 +541,10 @@ def search_photos_fast(
         for result in search_results:
             photo = photo_service.get_photo(result['photo_id'])
             if photo:
+                photo_response = PhotoResponse.from_orm(photo)
+                photo_response.justification = result.get('justification', 'Semantic similarity match')
                 results.append(SearchResultResponse(
-                    photo=PhotoResponse.from_orm(photo),
+                    photo=photo_response,
                     similarity_score=result['similarity']
                 ))
 

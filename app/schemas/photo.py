@@ -16,7 +16,8 @@ class PhotoResponse(BaseModel):
     uploaded_at: datetime
     processed: bool
     description: Optional[str] = None
-    user_description: Optional[str] = None  # Prompt fornecido pelo usuário
+    user_description: Optional[str] = None
+    justification: Optional[str] = None  # Justificativa da busca (opcional)
 
     class Config:
         from_attributes = True
