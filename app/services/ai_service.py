@@ -118,7 +118,7 @@ class AIService:
                 raise ValueError("GOOGLE_API_KEY não configurada")
 
             llm = ChatGoogleGenerativeAI(
-                model="gemini-pro",  # Multimodal model
+                model="gemini-2.5-flash",  # Multimodal model
                 google_api_key=api_key,
                 temperature=0.4,
                 max_tokens=1024

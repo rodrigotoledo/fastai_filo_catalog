@@ -531,20 +531,6 @@ class PhotoService:
         """
         return self.db.query(Photo).filter(Photo.id == photo_id).first()
 
-    def get_photos(self, page: int = 1, page_size: int = 12) -> Dict:
-        """
-        Busca fotos com paginação
-        """
-        offset = (page - 1) * page_size
-        photos = self.db.query(Photo).offset(offset).limit(page_size).all()
-        total_photos = self.db.query(Photo).count()
-
-    def get_photo(self, photo_id: int) -> Photo:
-        """
-        Busca uma foto específica por ID
-        """
-        return self.db.query(Photo).filter(Photo.id == photo_id).first()
-
     def get_photos(self, page: int = 1, page_size: int = 12, processed_only: bool = False) -> Dict:
         """
         Busca fotos com paginação. Opcionalmente filtra apenas fotos processadas.
