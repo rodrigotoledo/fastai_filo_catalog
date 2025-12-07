@@ -20,8 +20,9 @@ class VectorService:
         Returns list of dicts with 'photo_id', 'similarity', and 'justification'.
         """
         try:
-            # 1. Try to get cached embedding first
-            query_embedding = self.cache.get_embedding(query)
+            # 1. DISABLE CACHE TEMPORARILY FOR TESTING
+            # query_embedding = self.cache.get_embedding(query)
+            query_embedding = None  # Force fresh embedding generation
 
             if not query_embedding:
                 # Generate new embedding if not cached
@@ -29,8 +30,8 @@ class VectorService:
                 if not query_embedding:
                     logger.warning("Could not generate embedding for query")
                     return []
-                # Cache the new embedding
-                self.cache.set_embedding(query, query_embedding)
+                # DISABLE CACHE SETTING
+                # self.cache.set_embedding(query, query_embedding)
 
             # Minimum similarity threshold for results - higher for better quality
             min_similarity_threshold = 0.6  # Increased from 0.3 for higher quality results
@@ -48,7 +49,7 @@ class VectorService:
             # Format results with intelligent re-ranking
             filtered_results = []
             for photo, distance in results:
-                similarity_score = max(0.0, min(1.0, 1.0 - distance))  # Normal similarity score
+                similarity_score = max(0.0, min(1.0, 1.0 - distance))
 
                 # Calculate relevance boost based on multiple factors
                 relevance_boost = self._calculate_relevance_boost(query, photo.description or "", photo.original_filename)
@@ -61,9 +62,7 @@ class VectorService:
                         'photo_id': photo.id,
                         'similarity': final_score,
                         'justification': justification
-                    })
-
-            # Sort filtered results by final similarity score
+                    })            # Sort filtered results by final similarity score
             filtered_results.sort(key=lambda x: x['similarity'], reverse=True)
 
             return filtered_results[:limit]
@@ -74,7 +73,7 @@ class VectorService:
     def _calculate_relevance_boost(self, query: str, description: str, filename: str) -> float:
         """
         Calculate relevance boost based on keyword matches in filename and description.
-        Returns a boost value between 0.0 and 1.0.
+        Returns a boost value between -1.0 and 1.0 (can be negative for wrong matches).
         """
         try:
             query_lower = query.lower()
@@ -96,19 +95,38 @@ class VectorService:
                 'environments': ['praia', 'cidade', 'natureza', 'jardim', 'quintal', 'rua']
             }
 
+            # Check for animal conflicts - apply negative boost if wrong animal
+            query_animals = set()
+            filename_animals = set()
+            desc_animals = set()
+
+            for animal_type, keywords in keyword_groups['animals'].items():
+                if any(kw in query_lower for kw in keywords):
+                    query_animals.add(animal_type)
+                if any(kw in filename_lower for kw in keywords):
+                    filename_animals.add(animal_type)
+                if any(kw in desc_lower for kw in keywords):
+                    desc_animals.add(animal_type)
+
+            # If query specifies specific animals, penalize photos of different animals
+            if query_animals:
+                wrong_animals = (filename_animals | desc_animals) - query_animals
+                if wrong_animals:
+                    boost -= 0.5  # Strong penalty for wrong animal type
+
             # Check filename matches (higher weight)
             for category, keywords in keyword_groups.items():
                 if isinstance(keywords, dict):
                     for subcat, subkeywords in keywords.items():
                         if any(kw in filename_lower for kw in subkeywords):
                             if any(kw in query_lower for kw in subkeywords):
-                                boost += 0.4  # Strong boost for filename + query match
+                                boost += 0.8  # Very strong boost for filename + query match
                             else:
-                                boost += 0.2  # Moderate boost for filename match
+                                boost += 0.3  # Moderate boost for filename match
                 else:
                     if any(kw in filename_lower for kw in keywords):
                         if any(kw in query_lower for kw in keywords):
-                            boost += 0.3
+                            boost += 0.5
 
             # Check description matches (lower weight)
             for category, keywords in keyword_groups.items():
@@ -116,13 +134,13 @@ class VectorService:
                     for subcat, subkeywords in keywords.items():
                         if any(kw in desc_lower for kw in subkeywords):
                             if any(kw in query_lower for kw in subkeywords):
-                                boost += 0.2  # Boost for description + query match
+                                boost += 0.4  # Boost for description + query match
                 else:
                     if any(kw in desc_lower for kw in keywords):
                         if any(kw in query_lower for kw in keywords):
-                            boost += 0.1
+                            boost += 0.2
 
-            return min(boost, 0.8)  # Cap at 0.8 to keep scores reasonable
+            return max(-1.0, min(boost, 0.8))  # Cap between -1.0 and 0.8
 
         except Exception as e:
             logger.error(f"Error calculating relevance boost: {e}")
