@@ -5,6 +5,7 @@ from typing import List, Optional
 import os
 import uuid
 import logging
+import time
 from app.db.database import get_db
 from app.services.photo_service import PhotoService
 from app.models.photo import Photo
@@ -105,6 +106,72 @@ def get_photo_file(photo_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="File not found")
 
     return FileResponse(file_path, media_type=photo.content_type)
+
+# ============================================================================
+# MONITORING ENDPOINTS
+# ============================================================================
+
+@router.get("/metrics")
+async def get_performance_metrics():
+    """
+    Get comprehensive performance metrics for monitoring and alerting
+    """
+    try:
+        from app.services.visual_search_service import VisualSearchService
+
+        visual_search = VisualSearchService()
+        metrics = visual_search.get_performance_metrics()
+
+        return {
+            "service": "photo_search",
+            "version": "4.0",  # Phase 4: Monitoring
+            "timestamp": time.time(),
+            "metrics": metrics
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get metrics: {e}")
+        raise HTTPException(status_code=500, detail=f"Metrics collection failed: {str(e)}")
+
+@router.get("/health")
+async def health_check():
+    """
+    Comprehensive health check with performance alerts
+    """
+    try:
+        from app.services.visual_search_service import VisualSearchService
+
+        visual_search = VisualSearchService()
+        metrics = visual_search.get_performance_metrics()
+        alerts = visual_search.check_health_alerts()
+
+        # Overall health status
+        status_code = 200
+        if alerts["overall_status"] == "critical":
+            status_code = 503  # Service Unavailable
+        elif alerts["overall_status"] == "warning":
+            status_code = 200  # OK but with warnings
+
+        response = {
+            "service": "photo_search",
+            "status": alerts["overall_status"],
+            "timestamp": time.time(),
+            "version": "4.0",
+            "uptime_seconds": metrics.get("uptime_seconds", 0),
+            "alerts": alerts,
+            "quick_stats": {
+                "total_searches": metrics.get("total_searches", 0),
+                "avg_response_time_ms": metrics.get("avg_search_time_ms", 0),
+                "cache_hit_rate": metrics.get("cache_hit_rate_percent", 0),
+                "total_images": metrics.get("collection_stats", {}).get("total_images", 0)
+            }
+        }
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        raise HTTPException(status_code=503, detail=f"Health check failed: {str(e)}")
 
 @router.get("/{photo_id}", response_model=PhotoResponse)
 def get_photo(photo_id: int, db: Session = Depends(get_db)):
@@ -440,6 +507,41 @@ async def process_image_with_agent(
         if 'temp_path' in locals() and os.path.exists(temp_path):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail=f"Agent processing failed: {str(e)}")
+
+@router.get("/search/fast", response_model=SearchResponse)
+def search_photos_fast(
+    q: str = Query(..., description="Search query text"),
+    top_k: int = Query(12, ge=1, le=50, description="Number of results"),
+    db: Session = Depends(get_db)
+):
+    """
+    Fast semantic search using optimized ChromaDB with caching (Phase 4)
+    Bypasses LangChain agent for maximum speed
+    """
+    try:
+        from app.services.visual_search_service import VisualSearchService
+
+        visual_search = VisualSearchService()
+        photo_service = PhotoService(db)
+
+        # Use optimized search_by_text method directly
+        search_results = visual_search.search_by_text(q, top_k=top_k)
+
+        # Convert to API response format
+        results = []
+        for result in search_results:
+            photo = photo_service.get_photo(result['photo_id'])
+            if photo:
+                results.append(SearchResultResponse(
+                    photo=PhotoResponse.from_orm(photo),
+                    similarity_score=result['similarity']
+                ))
+
+        return SearchResponse(results=results)
+
+    except Exception as e:
+        logger.error(f"Fast search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 # ============================================================================
 # SEARCH ENDPOINTS

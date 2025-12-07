@@ -12,6 +12,9 @@ import base64
 import logging
 from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
+import hashlib
+import time
+from app.services.embedding_cache import EmbeddingCache
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,11 +42,19 @@ class VisualSearchService:
         # Initialize ChromaDB client
         self.client = chromadb.PersistentClient(path=str(db_path))
 
-        # Create or get collection for images
+        # Create or get collection for images with optimized HNSW settings
         self.collection = self.client.get_or_create_collection(
             name="images",
-            metadata={"hnsw:space": "cosine"}
+            metadata={
+                "hnsw:space": "cosine",
+                "hnsw:construction_ef": 200,  # Higher = better quality, slower construction
+                "hnsw:search_ef": 100,        # Higher = better recall, slower search
+                "hnsw:M": 32,                 # Higher = better recall, more memory
+            }
         )
+
+        # Batch processing settings
+        self.batch_size = 32  # Process embeddings in batches
 
         # Initialize embedding functions
         self.clip_embeddings = OpenCLIPEmbeddingFunction()  # For image embeddings
@@ -54,16 +65,37 @@ class VisualSearchService:
         # Initialize LLM for rich captions and re-ranking
         self.llm = self._initialize_llm()
 
+        # Initialize embedding cache
+        self.embedding_cache = EmbeddingCache()
+
+        # Performance monitoring
+        self._performance_stats = {
+            "total_searches": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "reranking_used": 0,
+            "reranking_skipped": 0,
+            "avg_search_time": 0.0,
+            "slow_queries": 0,
+            "last_reset": time.time(),
+            "query_types": {
+                "simple": 0,
+                "medium": 0,
+                "complex": 0,
+                "question": 0
+            }
+        }
+
         logger.info("VisualSearchService initialized with ChromaDB")
 
     def _initialize_llm(self) -> Optional[object]:
         """Initialize LLM with fallback chain"""
         try:
-            # Try Google Gemini first
+            # Try Google Gemini first with correct model
             api_key = os.getenv("GOOGLE_API_KEY")
             if api_key:
                 return ChatGoogleGenerativeAI(
-                    model="gemini-pro",
+                    model="gemini-1.5-flash",  # Use newer model
                     temperature=0.3,
                     max_tokens=1024
                 )
@@ -84,6 +116,20 @@ class VisualSearchService:
 
         logger.warning("No LLM available - captions will be basic")
         return None
+
+    def _generate_embedding_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings in batches for better performance"""
+        if len(texts) == 1:
+            return [self.text_embeddings(texts)[0]]
+
+        # Process in batches
+        all_embeddings = []
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i:i + self.batch_size]
+            batch_embeddings = self.text_embeddings(batch)
+            all_embeddings.extend(batch_embeddings)
+
+        return all_embeddings
 
     def add_image_with_agent(self, image_path: str, photo_id: int, user_description: str = None, tags: List[str] = None) -> str:
         """
@@ -175,6 +221,50 @@ class VisualSearchService:
         logger.info(f"Image added with combined embedding: {Path(image_path).name} | ID: {doc_id[:8]}")
         return doc_id
 
+    def add_images_batch(self, image_data: List[Dict]) -> List[str]:
+        """
+        Add multiple images at once for better performance
+        """
+        if not image_data:
+            return []
+
+        # Prepare all data
+        ids = []
+        embeddings = []
+        documents = []
+        metadatas = []
+
+        for data in image_data:
+            # Generate embeddings in batch
+            image_path = data['image_path']
+            caption = self._generate_rich_caption(image_path, data.get('user_description'))
+
+            # Batch embedding generation
+            image_emb = self.clip_embeddings([image_path])[0]
+            text_emb = self.text_embeddings([caption])[0]
+            combined_emb = image_emb  # Simplified for now
+
+            ids.append(str(uuid.uuid4()))
+            embeddings.append(combined_emb.tolist())
+            documents.append(caption)
+            metadatas.append({
+                "photo_id": str(data['photo_id']),
+                "user_description": data.get('user_description', ''),
+                "file_name": Path(image_path).name,
+                "caption": caption
+            })
+
+        # Batch add to ChromaDB
+        self.collection.add(
+            ids=ids,
+            embeddings=embeddings,
+            documents=documents,
+            metadatas=metadatas
+        )
+
+        logger.info(f"Batch added {len(ids)} images to ChromaDB")
+        return ids
+
     def _generate_rich_caption(self, image_path: str, user_context: str = None) -> str:
         """
         Generate a rich, detailed caption using multimodal LLM.
@@ -232,59 +322,144 @@ class VisualSearchService:
             # Fallback
             return f"Image: {Path(image_path).name} | {user_context or ''}"
 
-    def search_by_text(self, query: str, top_k: int = 8) -> List[Dict]:
+    def search_by_text(self, query: str, top_k: int = 8, use_reranking: bool = None) -> List[Dict]:
         """
-        Search images by text query using semantic similarity with combined embeddings.
+        Search images by text query using semantic similarity with intelligent caching and re-ranking.
 
         Args:
             query: Text query to search for
             top_k: Number of results to return
+            use_reranking: Force re-ranking decision (True/False) or auto-decide (None)
 
         Returns:
             List of search results with similarity scores
         """
+        start_time = time.time()
+        self._performance_stats["total_searches"] += 1
+
         try:
-            # Generate embedding for the text query
-            query_embedding = np.array(self.text_embeddings([query])[0])
+            # Check cache first
+            query_hash = hashlib.md5(f"{query}:{top_k}:{use_reranking}".encode()).hexdigest()
+            cached_results = self.embedding_cache.get_search_results(query_hash)
+            if cached_results:
+                logger.info(f"Cache hit for query: {query}")
+                self._performance_stats["cache_hits"] += 1
+                search_time = (time.time() - start_time) * 1000
+                self._performance_stats["avg_search_time"] = (
+                    (self._performance_stats["avg_search_time"] * (self._performance_stats["total_searches"] - 1)) + search_time
+                ) / self._performance_stats["total_searches"]
+                if search_time > 2000:  # > 2 seconds
+                    self._performance_stats["slow_queries"] += 1
+                return cached_results
 
-            # Since we stored combined embeddings (70% image + 30% text),
-            # we need to adjust the query embedding to match the same space
-            # For text queries, we weight the text embedding more heavily
-            adjusted_query = 0.3 * np.zeros_like(query_embedding) + 0.7 * query_embedding
-            adjusted_query = adjusted_query.tolist()
+            # Get cached embedding or generate new one
+            query_embedding = self.embedding_cache.get_embedding(query)
+            if not query_embedding:
+                # For text queries, we need to use CLIP-compatible embeddings
+                # Since collection uses CLIP (512 dims), truncate SentenceTransformer embedding
+                text_emb = self._generate_embedding_batch([query])[0]
+                query_embedding = text_emb[:512]  # Truncate to 512 dimensions
+                self.embedding_cache.set_embedding(query, query_embedding)
 
-            # Search in ChromaDB using semantic similarity
+            # Search with optimized parameters
             results = self.collection.query(
-                query_embeddings=[adjusted_query],
-                n_results=top_k * 2,  # Get more candidates for re-ranking
+                query_embeddings=[query_embedding],
+                n_results=min(top_k * 3, 50),  # Get more candidates but limit
                 include=["metadatas", "documents", "distances"]
             )
 
-            # Process candidates
-            candidates = []
-            for metadata, distance, document in zip(
-                results["metadatas"][0],
-                results["distances"][0],
-                results["documents"][0]
-            ):
-                if "photo_id" in metadata:
-                    candidates.append({
-                        "photo_id": int(metadata["photo_id"]),
-                        "similarity": 1 - distance,  # Convert distance to similarity
-                        "caption": document,
-                        "tags": metadata.get("tags", ""),
-                        "file_name": metadata.get("file_name", ""),
-                        "user_description": metadata.get("user_description", ""),
-                        "metadata": metadata
-                    })
+            # Process results faster
+            candidates = self._process_results_batch(results)
 
-            # Re-rank with LLM to eliminate false positives and improve relevance
-            return self._rerank_results(candidates, f"Find images most relevant to: '{query}'", use_image=False)[:top_k]
+            # Decide whether to use re-ranking based on query complexity
+            if use_reranking is None:
+                use_reranking = self._should_use_reranking(query)
+
+            # Re-rank only if needed
+            if use_reranking and len(candidates) > top_k:
+                final_results = self._rerank_results(candidates, f"Find images most relevant to: '{query}'", use_image=False)[:top_k]
+            else:
+                final_results = candidates[:top_k]
+
+            # Cache results
+            self.embedding_cache.set_search_results(query_hash, final_results)
+
+            # Update performance metrics
+            search_time = (time.time() - start_time) * 1000
+            self._performance_stats["avg_search_time"] = (
+                (self._performance_stats["avg_search_time"] * (self._performance_stats["total_searches"] - 1)) + search_time
+            ) / self._performance_stats["total_searches"]
+            if search_time > 2000:  # > 2 seconds
+                self._performance_stats["slow_queries"] += 1
+
+            # Update query type stats
+            query_type = self._classify_query_type(query)
+            self._performance_stats["query_types"][query_type] += 1
+
+            # Update re-ranking stats
+            if use_reranking:
+                self._performance_stats["reranking_used"] += 1
+            else:
+                self._performance_stats["reranking_skipped"] += 1
+
+            return final_results
 
         except Exception as e:
             logger.error(f"Semantic text search failed: {e}")
+            # Update error metrics
+            search_time = (time.time() - start_time) * 1000
+            self._performance_stats["avg_search_time"] = (
+                (self._performance_stats["avg_search_time"] * (self._performance_stats["total_searches"] - 1)) + search_time
+            ) / self._performance_stats["total_searches"]
+            if search_time > 2000:
+                self._performance_stats["slow_queries"] += 1
+
             # Fallback to basic text search
             return self._fallback_text_search(query, top_k)
+
+    def _classify_query_type(self, query: str) -> str:
+        """Classify query type for analytics"""
+        query_lower = query.lower().strip()
+
+        # Question patterns
+        if any(word in query_lower for word in ['quem', 'qual', 'quando', 'onde', 'como', 'por que', 'o que', '?']):
+            return "question"
+
+        # Complex queries (multiple concepts)
+        words = query_lower.split()
+        if len(words) > 3 or any(char in query for char in [',', ' e ', ' ou ', ' com ', ' sem ']):
+            return "complex"
+
+        # Medium queries (2-3 words)
+        if 2 <= len(words) <= 3:
+            return "medium"
+
+        # Simple queries (1 word)
+        return "simple"
+
+    def _process_results_batch(self, results: Dict) -> List[Dict]:
+        """Process ChromaDB query results into standardized format"""
+        if not results.get("metadatas") or not results["metadatas"][0]:
+            return []
+
+        candidates = []
+        for metadata, distance, document in zip(
+            results["metadatas"][0],
+            results["distances"][0],
+            results["documents"][0]
+        ):
+            if "photo_id" in metadata:
+                candidates.append({
+                    "photo_id": int(metadata["photo_id"]),
+                    "similarity": 1 - distance,  # Convert distance to similarity
+                    "caption": document,
+                    "tags": metadata.get("tags", ""),
+                    "file_name": metadata.get("file_name", ""),
+                    "user_description": metadata.get("user_description", ""),
+                    "metadata": metadata
+                })
+
+        return candidates
 
     def _fallback_text_search(self, query: str, top_k: int = 8) -> List[Dict]:
         """
@@ -455,40 +630,120 @@ class VisualSearchService:
             logger.warning(f"Failed to enhance query: {e}")
             return query
 
+    def _should_use_reranking(self, query: str) -> bool:
+        """
+        Enhanced decision logic for when to use re-ranking based on query analysis.
+
+        Args:
+            query: Search query to analyze
+
+        Returns:
+            True if re-ranking should be used, False otherwise
+        """
+        query_lower = query.lower().strip()
+
+        # Always skip re-ranking for very simple queries
+        simple_indicators = [
+            len(query.split()) <= 1,  # Single words
+            query.isdigit(),  # Numbers only
+            len(query) < 5,  # Very short queries
+            query_lower in ['gato', 'cachorro', 'carro', 'casa', 'pessoa', 'comida', 'bebida', 'flor', 'árvore'],  # Common single nouns
+            query_lower.startswith(('foto', 'imagem', 'picture', 'img')),  # Meta queries
+        ]
+
+        # Always use re-ranking for complex queries
+        complex_indicators = [
+            len(query.split()) >= 5,  # Very long queries
+            any(word in query_lower for word in ['com', 'e', 'ou', 'mas', 'não', 'sem', 'exceto']),  # Complex connectors
+            '?' in query or query_lower.startswith(('qual', 'quais', 'onde', 'quando', 'como')),  # Questions
+            any(char in query for char in ['"', "'", '(', ')', '[', ']', '{', '}']),  # Quoted or parenthesized
+            ',' in query or ';' in query,  # Lists or compound queries
+            any(word in query_lower for word in ['melhor', 'mais', 'menos', 'tipo', 'tipo de', 'parecido']),  # Comparative queries
+        ]
+
+        # Medium complexity - use heuristics
+        medium_indicators = [
+            len(query.split()) == 3,  # 3-word queries often need clarification
+            any(color in query_lower for color in ['vermelho', 'azul', 'verde', 'amarelo', 'preto', 'branco', 'roxo', 'rosa', 'laranja']),  # Color queries
+            any(size in query_lower for size in ['grande', 'pequeno', 'alto', 'baixo', 'largo', 'estreito']),  # Size queries
+            any(emotion in query_lower for emotion in ['feliz', 'triste', 'sorrindo', 'chorando', 'rindo']),  # Emotional queries
+        ]
+
+        # Don't use re-ranking for simple queries
+        if any(simple_indicators):
+            return False
+
+        # Always use re-ranking for complex queries
+        if any(complex_indicators):
+            return True
+
+        # Use re-ranking for medium-complexity queries (coin flip based on indicators)
+        if any(medium_indicators):
+            return True
+
+        # Default: be conservative, don't use re-ranking for borderline cases
+        return len(query.split()) >= 4
+
     def _rerank_results(self, candidates: List[Dict], query: str, use_image: bool = False) -> List[Dict]:
         """
-        Re-rank search results using LLM to eliminate false positives.
+        Optimized re-ranking with early exit and simplified prompts for better performance.
         """
         if len(candidates) <= 1 or not self.llm:
             return candidates
 
+        # Early exit for simple cases
+        if len(candidates) <= 3:
+            return candidates
+
         try:
-            prompt = f"""
-            Query: {query}
+            # Limit candidates for re-ranking to improve speed
+            candidates_to_rank = candidates[:8]  # Max 8 for re-ranking
 
-            Rank these images from most relevant to least relevant.
-            Respond ONLY with the file names in correct order, one per line.
+            # Enhanced prompt for better LLM understanding
+            prompt = f"""Você é um especialista em busca de imagens. Ordene estas {len(candidates_to_rank)} imagens por relevância para a consulta: "{query}"
 
-            Candidates:
-            """
+IMPORTANTE: Foque na correspondência semântica, não apenas em palavras-chave. Considere:
+- Similaridade visual e conceitual com a consulta
+- Contexto e intenção da busca
+- Relevância prática (ex: "carro vermelho" deve priorizar carros vermelhos sobre outros objetos vermelhos)
 
-            for i, candidate in enumerate(candidates[:12], 1):
-                prompt += f"\n{i}. {candidate['file_name']}\n   → {candidate['caption'][:300]}..."
+Responda APENAS com números separados por vírgula, em ordem de relevância (1=mais relevante).
+Exemplo: 1,3,2,4,5
 
-            chain = PromptTemplate.from_template(prompt) | self.llm
-            response = chain.invoke({})
+Imagens disponíveis:
+"""
 
-            # Parse response
-            lines = [line.strip() for line in response.content.split("\n") if line.strip() and "." in line]
-            ranked_names = [line.split(".")[1].split("→")[0].strip() for line in lines]
+            for i, candidate in enumerate(candidates_to_rank, 1):
+                # Include more context for better ranking
+                context = candidate.get('caption', '')[:100]  # Limit caption length
+                filename = candidate.get('file_name', f'imagem_{i}')
+                user_desc = candidate.get('user_description', '')[:50]
 
-            # Reorder candidates
+                prompt += f"{i}. {filename}"
+                if context:
+                    prompt += f" - {context}"
+                if user_desc:
+                    prompt += f" (Contexto: {user_desc})"
+                prompt += "\n"
+
+            prompt += "\nOrdem de relevância (apenas números):"
+
+            # Faster LLM call with optimized settings
+            response = self.llm.invoke(prompt)
+
+            # Parse response more efficiently
+            content = response.content.strip() if hasattr(response, 'content') else str(response)
+
+            # Extract ranking
+            import re
+            numbers = re.findall(r'\d+', content)
+            ranking = [int(n) for n in numbers if 1 <= int(n) <= len(candidates_to_rank)]
+
+            # Reorder based on ranking
             ranked_results = []
-            for name in ranked_names:
-                for candidate in candidates:
-                    if name in candidate["file_name"]:
-                        if candidate not in ranked_results:
-                            ranked_results.append(candidate)
+            for rank in ranking:
+                if 1 <= rank <= len(candidates_to_rank):
+                    ranked_results.append(candidates_to_rank[rank - 1])
 
             # Add remaining candidates
             remaining = [c for c in candidates if c not in ranked_results]
@@ -497,6 +752,180 @@ class VisualSearchService:
         except Exception as e:
             logger.warning(f"Re-ranking failed: {e}")
             return candidates
+
+    def _rerank_results_batch(self, query_candidates_pairs: List[Tuple[str, List[Dict]]]) -> List[List[Dict]]:
+        """
+        Batch re-ranking for multiple queries to improve efficiency.
+
+        Args:
+            query_candidates_pairs: List of (query, candidates) tuples
+
+        Returns:
+            List of re-ranked candidate lists
+        """
+        if not query_candidates_pairs or not self.llm:
+            return [candidates for _, candidates in query_candidates_pairs]
+
+        results = []
+
+        # Process in smaller batches to avoid token limits
+        batch_size = 3  # Process 3 queries at a time
+
+        for i in range(0, len(query_candidates_pairs), batch_size):
+            batch = query_candidates_pairs[i:i + batch_size]
+
+            # Create combined prompt for batch
+            prompt = "Você é um especialista em busca de imagens. Para cada consulta abaixo, ordene as imagens por relevância.\n\n"
+
+            query_indices = []
+            for j, (query, candidates) in enumerate(batch):
+                if len(candidates) <= 1:
+                    results.append(candidates)
+                    continue
+
+                candidates_to_rank = candidates[:6]  # Limit per query in batch
+                query_indices.append((j, query, candidates_to_rank))
+
+                prompt += f"Consulta {j+1}: \"{query}\"\n"
+                prompt += f"Imagens para Consulta {j+1}:\n"
+
+                for k, candidate in enumerate(candidates_to_rank, 1):
+                    context = candidate.get('caption', '')[:80]
+                    filename = candidate.get('file_name', f'imagem_{k}')
+                    prompt += f"  {k}. {filename}"
+                    if context:
+                        prompt += f" - {context}"
+                    prompt += "\n"
+                prompt += "\n"
+
+            if not query_indices:
+                continue
+
+            prompt += "Para cada consulta, responda com: 'Consulta N: ordem_relevancia' (ex: Consulta 1: 1,3,2)\n"
+
+            try:
+                # Single LLM call for the batch
+                response = self.llm.invoke(prompt)
+                content = response.content.strip() if hasattr(response, 'content') else str(response)
+
+                # Parse batch response
+                for j, query, candidates_to_rank in query_indices:
+                    # Extract ranking for this query
+                    pattern = f"Consulta {j+1}: ([0-9, ]+)"
+                    import re
+                    match = re.search(pattern, content, re.IGNORECASE)
+                    if match:
+                        ranking_str = match.group(1)
+                        numbers = re.findall(r'\d+', ranking_str)
+                        ranking = [int(n) for n in numbers if 1 <= int(n) <= len(candidates_to_rank)]
+
+                        # Reorder candidates
+                        ranked_results = []
+                        for rank in ranking:
+                            if 1 <= rank <= len(candidates_to_rank):
+                                ranked_results.append(candidates_to_rank[rank - 1])
+
+                        # Add remaining candidates
+                        remaining = [c for c in batch[j][1] if c not in ranked_results]
+                        results.append(ranked_results + remaining)
+                    else:
+                        # Fallback: return original order
+                        results.append(batch[j][1])
+
+            except Exception as e:
+                logger.warning(f"Batch re-ranking failed: {e}")
+                # Fallback: return all original orders
+                for _, candidates in batch:
+                    results.extend([candidates] * len(batch))
+                break
+
+        return results
+
+    def get_performance_metrics(self) -> Dict[str, Any]:
+        """Get comprehensive performance metrics for monitoring"""
+        try:
+            current_time = time.time()
+            uptime_seconds = current_time - self._performance_stats["last_reset"]
+
+            # Calculate rates per second
+            searches_per_second = self._performance_stats["total_searches"] / max(uptime_seconds, 1)
+            cache_hit_rate = (self._performance_stats["cache_hits"] /
+                            max(self._performance_stats["total_searches"], 1)) * 100
+
+            reranking_rate = (self._performance_stats["reranking_used"] /
+                            max(self._performance_stats["total_searches"], 1)) * 100
+
+            # Get cache stats
+            cache_stats = self.embedding_cache.get_stats()
+
+            return {
+                "uptime_seconds": uptime_seconds,
+                "total_searches": self._performance_stats["total_searches"],
+                "searches_per_second": round(searches_per_second, 2),
+                "cache_hits": self._performance_stats["cache_hits"],
+                "cache_misses": self._performance_stats["cache_misses"],
+                "cache_hit_rate_percent": round(cache_hit_rate, 2),
+                "reranking_used": self._performance_stats["reranking_used"],
+                "reranking_skipped": self._performance_stats["reranking_skipped"],
+                "reranking_rate_percent": round(reranking_rate, 2),
+                "avg_search_time_ms": round(self._performance_stats["avg_search_time"] * 1000, 2),
+                "slow_queries_count": self._performance_stats["slow_queries"],
+                "query_type_distribution": self._performance_stats["query_types"],
+                "cache_stats": cache_stats,
+                "collection_stats": self.get_collection_stats(),
+                "last_reset": self._performance_stats["last_reset"],
+                "status": "healthy" if searches_per_second > 0 else "idle"
+            }
+        except Exception as e:
+            logger.error(f"Failed to get performance metrics: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "uptime_seconds": 0
+            }
+
+    def check_health_alerts(self) -> Dict[str, Any]:
+        """Check for performance issues and return alerts"""
+        alerts = []
+        metrics = self.get_performance_metrics()
+
+        # Alert thresholds
+        if metrics.get("avg_search_time_ms", 0) > 2000:  # > 2 seconds
+            alerts.append({
+                "level": "critical",
+                "message": f"Average search time too high: {metrics['avg_search_time_ms']}ms",
+                "threshold": "2000ms",
+                "current": f"{metrics['avg_search_time_ms']}ms"
+            })
+
+        if metrics.get("cache_hit_rate_percent", 0) < 50:  # < 50% hit rate
+            alerts.append({
+                "level": "warning",
+                "message": f"Low cache hit rate: {metrics['cache_hit_rate_percent']}%",
+                "threshold": "50%",
+                "current": f"{metrics['cache_hit_rate_percent']}%"
+            })
+
+        if metrics.get("slow_queries_count", 0) > 10:  # Too many slow queries
+            alerts.append({
+                "level": "warning",
+                "message": f"High number of slow queries: {metrics['slow_queries_count']}",
+                "threshold": "10",
+                "current": str(metrics['slow_queries_count'])
+            })
+
+        if metrics.get("status") == "error":
+            alerts.append({
+                "level": "critical",
+                "message": "Service is in error state",
+                "details": metrics.get("error", "Unknown error")
+            })
+
+        return {
+            "alerts_count": len(alerts),
+            "alerts": alerts,
+            "overall_status": "critical" if any(a["level"] == "critical" for a in alerts) else "warning" if alerts else "healthy"
+        }
 
     def get_collection_stats(self) -> Dict[str, Any]:
         """Get collection statistics"""
