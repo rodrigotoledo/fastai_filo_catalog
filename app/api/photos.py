@@ -67,7 +67,7 @@ async def upload_photos(
 @router.post("/populate", response_model=List[PhotoResponse])
 async def populate_photo(
     term: str = Form(..., description="Termo para buscar imagem no LoremFlickr"),
-    count: int = Form(4, description="Número de imagens a baixar (1-10)", ge=1, le=10),
+    count: int = Form(1, description="Número de imagens a baixar (1-10)", ge=1, le=10),
     db: Session = Depends(get_db)
 ):
     """

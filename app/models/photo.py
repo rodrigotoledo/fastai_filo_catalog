@@ -5,6 +5,7 @@ from sqlalchemy import Column
 from pgvector.sqlalchemy import Vector
 
 class Photo(SQLModel, table=True):
+    __tablename__ = 'photos'
     id: Optional[int] = Field(default=None, primary_key=True)
     filename: str
     original_filename: str

@@ -55,6 +55,16 @@ def process_photo_job(photo_id: int):
         db.commit()
         logger.info(f"Foto {photo_id} processada com sucesso")
 
+        # Adicionar ao índice de busca visual
+        try:
+            from app.services.visual_search_service import VisualSearchService
+            visual_search = VisualSearchService()
+            visual_search.add_image(photo.file_path, photo.id, photo.user_description)
+            logger.info(f"Foto {photo_id} adicionada ao índice de busca")
+        except Exception as e:
+            logger.error(f"Erro ao adicionar foto {photo_id} ao índice de busca: {str(e)}")
+            # Não falhar o processamento se o índice falhar
+
     except Exception as e:
         logger.error(f"Erro ao processar foto {photo_id}: {str(e)}")
         db.rollback()

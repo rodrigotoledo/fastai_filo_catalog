@@ -81,7 +81,7 @@ def process_unprocessed_clients():
     finally:
         db.close()
 
-def run_scheduler(interval_seconds: int = 300):  # 5 minutos por padrão
+def run_scheduler(interval_seconds: int = 10):
     """
     Executa o scheduler periodicamente
     """
@@ -99,5 +99,5 @@ def run_scheduler(interval_seconds: int = 300):  # 5 minutos por padrão
 
 if __name__ == "__main__":
     # Executar scheduler
-    interval = int(os.getenv('SCHEDULER_INTERVAL_SECONDS', '300'))  # 5 minutos por padrão
+    interval = int(os.getenv('SCHEDULER_INTERVAL_SECONDS', '10'))  # 5 minutos por padrão
     run_scheduler(interval)

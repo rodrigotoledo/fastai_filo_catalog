@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image
 import base64
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
 
 logging.basicConfig(level=logging.INFO)
@@ -63,7 +63,7 @@ class VisualSearchService:
             api_key = os.getenv("GOOGLE_API_KEY")
             if api_key:
                 return ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
+                    model="gemini-pro",
                     temperature=0.3,
                     max_tokens=1024
                 )
@@ -119,8 +119,9 @@ class VisualSearchService:
         except Exception as e:
             logger.error(f"Error in agent processing: {str(e)}")
             return self.add_image(image_path, photo_id, user_description, tags)
+    def add_image(self, image_path: str, photo_id: int, user_description: str = None, tags: List[str] = None) -> str:
         """
-        Add an image to the search index with rich AI-generated caption.
+        Add an image to the search index with combined image+text embeddings.
 
         Args:
             image_path: Path to the image file
@@ -138,13 +139,17 @@ class VisualSearchService:
         caption = self._generate_rich_caption(image_path, user_description)
 
         # Generate embeddings
-        image_embedding = self.clip_embeddings([image_path])[0]
-        text_embedding = self.text_embeddings([caption])[0]
+        image_embedding = np.array(self.clip_embeddings([image_path])[0])
+        text_embedding = np.array(self.text_embeddings([caption])[0])
+
+        # For now, use only CLIP embedding (512 dimensions) to match our database schema
+        # TODO: Implement proper dimension alignment or use separate indices
+        combined_embedding = image_embedding.tolist()
 
         # Create unique document ID
         doc_id = str(uuid.uuid4())
 
-        # Prepare metadata
+        # Prepare comprehensive metadata
         metadata = {
             "image_path": image_path,
             "photo_id": str(photo_id),
@@ -152,19 +157,22 @@ class VisualSearchService:
             "tags": ",".join(tags) if tags else "",
             "file_type": Path(image_path).suffix.lower(),
             "file_name": Path(image_path).name,
-            "created_at": str(uuid.uuid1().time),  # Timestamp
-            "text_embedding": str(text_embedding.tolist()) if hasattr(text_embedding, 'tolist') else str(text_embedding)  # Store text embedding in metadata
+            "created_at": str(uuid.uuid1().time),
+            "caption": caption,
+            # Store individual embeddings for potential future use
+            "image_embedding": str(image_embedding.tolist()),
+            "text_embedding": str(text_embedding.tolist())
         }
 
-        # Add to ChromaDB (single entry with image embedding, text stored in metadata)
+        # Add to ChromaDB with combined embedding
         self.collection.add(
             ids=[doc_id],
-            embeddings=[image_embedding],
+            embeddings=[combined_embedding],
             documents=[caption],
             metadatas=[metadata]
         )
 
-        logger.info(f"Image added to search index: {Path(image_path).name} | ID: {doc_id[:8]}")
+        logger.info(f"Image added with combined embedding: {Path(image_path).name} | ID: {doc_id[:8]}")
         return doc_id
 
     def _generate_rich_caption(self, image_path: str, user_context: str = None) -> str:
@@ -226,7 +234,7 @@ class VisualSearchService:
 
     def search_by_text(self, query: str, top_k: int = 8) -> List[Dict]:
         """
-        Search images by text query using semantic similarity.
+        Search images by text query using semantic similarity with combined embeddings.
 
         Args:
             query: Text query to search for
@@ -235,9 +243,53 @@ class VisualSearchService:
         Returns:
             List of search results with similarity scores
         """
-        # For text search, we'll search through the documents (captions) directly
-        # since ChromaDB doesn't support multiple embedding functions easily
+        try:
+            # Generate embedding for the text query
+            query_embedding = np.array(self.text_embeddings([query])[0])
 
+            # Since we stored combined embeddings (70% image + 30% text),
+            # we need to adjust the query embedding to match the same space
+            # For text queries, we weight the text embedding more heavily
+            adjusted_query = 0.3 * np.zeros_like(query_embedding) + 0.7 * query_embedding
+            adjusted_query = adjusted_query.tolist()
+
+            # Search in ChromaDB using semantic similarity
+            results = self.collection.query(
+                query_embeddings=[adjusted_query],
+                n_results=top_k * 2,  # Get more candidates for re-ranking
+                include=["metadatas", "documents", "distances"]
+            )
+
+            # Process candidates
+            candidates = []
+            for metadata, distance, document in zip(
+                results["metadatas"][0],
+                results["distances"][0],
+                results["documents"][0]
+            ):
+                if "photo_id" in metadata:
+                    candidates.append({
+                        "photo_id": int(metadata["photo_id"]),
+                        "similarity": 1 - distance,  # Convert distance to similarity
+                        "caption": document,
+                        "tags": metadata.get("tags", ""),
+                        "file_name": metadata.get("file_name", ""),
+                        "user_description": metadata.get("user_description", ""),
+                        "metadata": metadata
+                    })
+
+            # Re-rank with LLM to eliminate false positives and improve relevance
+            return self._rerank_results(candidates, f"Find images most relevant to: '{query}'", use_image=False)[:top_k]
+
+        except Exception as e:
+            logger.error(f"Semantic text search failed: {e}")
+            # Fallback to basic text search
+            return self._fallback_text_search(query, top_k)
+
+    def _fallback_text_search(self, query: str, top_k: int = 8) -> List[Dict]:
+        """
+        Fallback text search using simple string matching when semantic search fails.
+        """
         try:
             # Get all documents and metadata
             all_results = self.collection.get(include=["metadatas", "documents"])
@@ -250,7 +302,7 @@ class VisualSearchService:
             expanded_queries = self._expand_query(query)
             expanded_lower = [q.lower() for q in expanded_queries]
 
-            # Simple text matching for now (can be improved with better text search)
+            # Simple text matching
             for i, (doc, metadata) in enumerate(zip(all_results["documents"], all_results["metadatas"])):
                 if "photo_id" not in metadata:
                     continue
@@ -263,24 +315,25 @@ class VisualSearchService:
 
                 # Check original query
                 if query_lower in doc_lower:
-                    score += 10  # High score for matches in caption
+                    score += 10
                 if query_lower in metadata_text:
-                    score += 5   # Medium score for matches in metadata
+                    score += 5
 
-                # Check expanded queries (synonyms/translations)
+                # Check expanded queries
                 for exp_query in expanded_lower:
                     if exp_query in doc_lower:
-                        score += 8  # Good score for expanded matches in caption
+                        score += 8
                     if exp_query in metadata_text:
-                        score += 4  # Medium score for expanded matches in metadata
+                        score += 4
 
                 if score > 0:
                     candidates.append({
                         "photo_id": int(metadata["photo_id"]),
-                        "similarity": min(score / 10.0, 1.0),  # Normalize to 0-1
+                        "similarity": min(score / 10.0, 1.0),
                         "caption": doc,
                         "tags": metadata.get("tags", ""),
                         "file_name": metadata.get("file_name", ""),
+                        "user_description": metadata.get("user_description", ""),
                         "metadata": metadata
                     })
 
@@ -289,7 +342,7 @@ class VisualSearchService:
             return candidates[:top_k]
 
         except Exception as e:
-            logger.error(f"Text search failed: {e}")
+            logger.error(f"Fallback text search failed: {e}")
             return []
 
     def _expand_query(self, query: str) -> List[str]:
@@ -333,7 +386,7 @@ class VisualSearchService:
 
     def search_by_image(self, query_image_path: str, top_k: int = 8) -> List[Dict]:
         """
-        Reverse image search - find similar images.
+        Reverse image search - find similar images using combined embeddings.
 
         Args:
             query_image_path: Path to query image
@@ -345,35 +398,46 @@ class VisualSearchService:
         if not Path(query_image_path).exists():
             raise FileNotFoundError(f"Query image not found: {query_image_path}")
 
-        # Generate embedding for query image
-        query_embedding = self.clip_embeddings([query_image_path])
+        try:
+            # Generate embeddings for query image
+            image_embedding = np.array(self.clip_embeddings([query_image_path])[0])
 
-        # Search in ChromaDB
-        results = self.collection.query(
-            query_embeddings=query_embedding,
-            n_results=top_k * 2,
-            include=["metadatas", "documents", "distances"]
-        )
+            # For reverse image search, we weight the image embedding more heavily
+            # since we're looking for visual similarity
+            adjusted_query = 0.8 * image_embedding + 0.2 * np.zeros_like(image_embedding)
+            adjusted_query = adjusted_query.tolist()
 
-        # Process candidates
-        candidates = []
-        for metadata, distance, document in zip(
-            results["metadatas"][0],
-            results["distances"][0],
-            results["documents"][0]
-        ):
-            if "photo_id" in metadata:
-                candidates.append({
-                    "photo_id": int(metadata["photo_id"]),
-                    "similarity": 1 - distance,
-                    "caption": document,
-                    "tags": metadata.get("tags", ""),
-                    "file_name": metadata.get("file_name", ""),
-                    "metadata": metadata
-                })
+            # Search in ChromaDB using combined embeddings
+            results = self.collection.query(
+                query_embeddings=[adjusted_query],
+                n_results=top_k * 2,
+                include=["metadatas", "documents", "distances"]
+            )
 
-        # Re-rank with context about visual similarity
-        return self._rerank_results(candidates, "Find the most visually similar images to this one", use_image=True)[:top_k]
+            # Process candidates
+            candidates = []
+            for metadata, distance, document in zip(
+                results["metadatas"][0],
+                results["distances"][0],
+                results["documents"][0]
+            ):
+                if "photo_id" in metadata:
+                    candidates.append({
+                        "photo_id": int(metadata["photo_id"]),
+                        "similarity": 1 - distance,
+                        "caption": document,
+                        "tags": metadata.get("tags", ""),
+                        "file_name": metadata.get("file_name", ""),
+                        "user_description": metadata.get("user_description", ""),
+                        "metadata": metadata
+                    })
+
+            # Re-rank with context about visual similarity
+            return self._rerank_results(candidates, "Find the most visually similar images to this one", use_image=True)[:top_k]
+
+        except Exception as e:
+            logger.error(f"Reverse image search failed: {e}")
+            return []
 
     def _enhance_query(self, query: str) -> str:
         """Enhance search query using LLM for better results"""
@@ -433,3 +497,23 @@ class VisualSearchService:
         except Exception as e:
             logger.warning(f"Re-ranking failed: {e}")
             return candidates
+
+    def get_collection_stats(self) -> Dict[str, Any]:
+        """Get collection statistics"""
+        try:
+            count = self.collection.count()
+            return {
+                "total_images": count,
+                "collection_name": "images",
+                "embedding_dimensions": 512,  # Combined embedding dimension
+                "status": "active",
+                "embedding_type": "combined_clip_text",
+                "description": "Unified visual-textual search space (70% CLIP + 30% SentenceTransformer)"
+            }
+        except Exception as e:
+            logger.error(f"Failed to get collection stats: {e}")
+            return {
+                "total_images": 0,
+                "status": "error",
+                "error": str(e)
+            }

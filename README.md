@@ -315,7 +315,7 @@ GOOGLE_API_KEY=...
 DATABASE_URL=postgresql://user:pass@db:5432/photo_finder
 
 # Scheduler
-SCHEDULER_INTERVAL_SECONDS=300  # 5 minutos
+SCHEDULER_INTERVAL_SECONDS=10
 ```
 
 ### Modelos de IA Disponíveis

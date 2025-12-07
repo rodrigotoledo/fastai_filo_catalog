@@ -60,22 +60,33 @@ class PhotoService:
 
         # Upload para Gemini File Search Store (se disponível)
         try:
+            # Upload done. Now Process with AI (Gemini)
             ai_service = AIService()
 
-            # Criar descrição rica para busca semântica
-            descricao = f"""
-            Foto: {photo.original_filename}
-            Descrição: {user_description or 'Foto sem descrição específica'}
-            Tipo: {photo.content_type}
-            Tamanho: {photo.file_size} bytes
-            """
+            # 1. Generate Rich Description using Gemini Multimodal
+            logger.info(f"Generating rich description for {unique_filename}...")
+            rich_description = ai_service._generate_description_gemini(str(file_path), user_description)
 
-            # File Search Store não está disponível na versão atual do SDK
-            # Por enquanto, apenas salvar localmente
-            logger.info("File Search Store não disponível - foto salva apenas localmente")
+            # Update photo with description
+            photo.description = rich_description
+
+            # 2. Generate Embedding for the description
+            # We combine user_description + rich_description for better semantic coverage
+            full_text_context = f"{user_description or ''} {rich_description}"
+            logger.info(f"Generating embedding for {unique_filename}...")
+            embedding = ai_service.generate_embedding(full_text_context)
+
+            if embedding:
+                photo.embedding = embedding
+                photo.processed = True
+
+            self.db.add(photo)
+            self.db.commit()
+            self.db.refresh(photo)
 
         except Exception as e:
-            print(f"WARNING: Não foi possível enviar para Gemini File Search Store: {str(e)}")
+            logger.error(f"Failed to process AI fields for {unique_filename}: {e}")
+            # Non-blocking, we still saved the photo
 
         return photo
 
@@ -88,7 +99,6 @@ class PhotoService:
 
         photos = []
         for i in range(count):
-            print(f"DEBUG: Starting populate_photo {i+1}/{count} for term: {term}")
 
             # Validar e sanitizar o termo
             if not term or not term.strip():
@@ -106,9 +116,9 @@ class PhotoService:
             # Tentar LoremFlickr primeiro
             try:
                 encoded_term = urllib.parse.quote(clean_term)
-                url = f"https://loremflickr.com/640/480/{encoded_term}"
+                url = f"https://image.pollinations.ai/prompt/{encoded_term}"
 
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=30) as client:
                     response = await client.get(url)
                     response.raise_for_status()
 
@@ -123,29 +133,149 @@ class PhotoService:
                     actual_term = clean_term
 
             except Exception as e:
-                print(f"DEBUG: LoremFlickr failed: {str(e)}, trying fallback...")
+                # Fallback inteligente: tentar termos mais genéricos
+                fallback_terms = []
 
-                # Fallback para imagens aleatórias
-                try:
-                    fallback_url = "https://picsum.photos/640/480"
+                # Quebrar o termo em palavras e tentar combinações
+                words = clean_term.split()
+                if len(words) > 1:
+                    # Tentar primeira palavra
+                    fallback_terms.append(words[0])
+                    # Tentar segunda palavra
+                    if len(words) > 1:
+                        fallback_terms.append(words[1])
 
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        response = await client.get(fallback_url)
-                        response.raise_for_status()
+                # Termos genéricos relacionados
+                if any(word in clean_term.lower() for word in ['cachorro', 'dog', 'cão']):
+                    fallback_terms.extend(['dog', 'animal', 'pet'])
+                elif any(word in clean_term.lower() for word in ['gato', 'cat']):
+                    fallback_terms.extend(['cat', 'animal', 'pet'])
+                elif any(word in clean_term.lower() for word in ['praia', 'beach', 'mar']):
+                    fallback_terms.extend(['beach', 'sea', 'ocean', 'nature'])
+                elif any(word in clean_term.lower() for word in ['cidade', 'city', 'urbano']):
+                    fallback_terms.extend(['city', 'urban', 'street'])
 
-                        content_type = response.headers.get('content-type', '')
-                        if not content_type.startswith('image/'):
-                            raise HTTPException(status_code=500, detail=f"Invalid fallback response type: {content_type}")
+                # Adicionar termos genéricos sempre disponíveis
+                fallback_terms.extend(['nature', 'landscape', 'house', 'building'])
 
-                        content = response.content
-                        if len(content) < 1000:
-                            raise HTTPException(status_code=500, detail="Downloaded fallback content is too small")
+                # Tentar cada termo de fallback
+                success = False
+                for fallback_term in fallback_terms[:5]:  # Limitar a 5 tentativas
+                    try:
+                        encoded_fallback = urllib.parse.quote(fallback_term)
+                        url = f"https://image.pollinations.ai/prompt/{encoded_fallback}"
 
-                        # Ajustar o termo para indicar que foi fallback
-                        actual_term = f"{clean_term} (random)"
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            response = await client.get(url)
+                            response.raise_for_status()
 
-                except Exception as fallback_e:
-                    raise HTTPException(status_code=500, detail=f"Failed to download fallback image: {str(fallback_e)}")
+                            content_type = response.headers.get('content-type', '')
+                            if not content_type.startswith('image/'):
+                                continue
+
+                            content = response.content
+                            if len(content) < 1000:
+                                continue
+
+                            actual_term = f"{clean_term} (fallback: {fallback_term})"
+                            success = True
+                            break
+
+                    except Exception as fallback_e:
+                        continue
+
+                # Se nenhum fallback funcionou, usar imagem aleatória mas marcar claramente
+                if not success:
+                    try:
+                        random_url = f"https://image.pollinations.ai/prompt/random"
+
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            response = await client.get(random_url)
+                            response.raise_for_status()
+
+                            content_type = response.headers.get('content-type', '')
+                            if not content_type.startswith('image/'):
+                                raise HTTPException(status_code=500, detail=f"Invalid random response type: {content_type}")
+
+                            content = response.content
+                            if len(content) < 1000:
+                                raise HTTPException(status_code=500, detail="Downloaded random content is too small")
+
+                            actual_term = f"{clean_term} (random image - no relevant images found)"
+
+                    except Exception as random_e:
+                        raise HTTPException(status_code=500, detail=f"Failed to download random image: {str(random_e)}")
+                fallback_terms = []
+
+                # Quebrar o termo em palavras e tentar combinações
+                words = clean_term.split()
+                if len(words) > 1:
+                    # Tentar primeira palavra
+                    fallback_terms.append(words[0])
+                    # Tentar segunda palavra
+                    if len(words) > 1:
+                        fallback_terms.append(words[1])
+
+                # Termos genéricos relacionados
+                if any(word in clean_term.lower() for word in ['cachorro', 'dog', 'cão']):
+                    fallback_terms.extend(['dog', 'animal', 'pet'])
+                elif any(word in clean_term.lower() for word in ['gato', 'cat']):
+                    fallback_terms.extend(['cat', 'animal', 'pet'])
+                elif any(word in clean_term.lower() for word in ['praia', 'beach', 'mar']):
+                    fallback_terms.extend(['beach', 'sea', 'ocean', 'nature'])
+                elif any(word in clean_term.lower() for word in ['cidade', 'city', 'urbano']):
+                    fallback_terms.extend(['city', 'urban', 'street'])
+
+                # Adicionar termos genéricos
+                fallback_terms.extend(['nature', 'landscape', 'random'])
+
+                # Tentar cada termo de fallback
+                success = False
+                for fallback_term in fallback_terms[:3]:  # Limitar a 3 tentativas
+                    try:
+                        encoded_fallback = urllib.parse.quote(fallback_term)
+                        url = f"https://image.pollinations.ai/prompt/{encoded_fallback}"
+
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            response = await client.get(url)
+                            response.raise_for_status()
+
+                            content_type = response.headers.get('content-type', '')
+                            if not content_type.startswith('image/'):
+                                continue
+
+                            content = response.content
+                            if len(content) < 1000:
+                                continue
+
+                            actual_term = f"{clean_term} (fallback: {fallback_term})"
+                            success = True
+                            break
+
+                    except Exception as fallback_e:
+                        continue
+
+                # Se nenhum fallback funcionou, usar imagem aleatória mas marcar claramente
+                if not success:
+                    try:
+                        random_url = f"https://image.pollinations.ai/prompt/random"
+
+                        async with httpx.AsyncClient(timeout=30) as client:
+                            response = await client.get(random_url)
+                            response.raise_for_status()
+
+                            content_type = response.headers.get('content-type', '')
+                            if not content_type.startswith('image/'):
+                                raise HTTPException(status_code=500, detail=f"Invalid random response type: {content_type}")
+
+                            content = response.content
+                            if len(content) < 1000:
+                                raise HTTPException(status_code=500, detail="Downloaded random content is too small")
+
+                            actual_term = f"{clean_term} (random image - no relevant images found)"
+
+                    except Exception as random_e:
+                        raise HTTPException(status_code=500, detail=f"Failed to download random image: {str(random_e)}")
 
             # Gerar nome único para o arquivo
             unique_filename = f"{uuid.uuid4()}.jpg"
@@ -165,7 +295,8 @@ class PhotoService:
                 file_path=str(file_path),
                 file_size=len(content),
                 content_type="image/jpeg",
-                user_description=actual_term
+                user_description=actual_term,
+                description=actual_term
             )
 
             self.db.add(photo)
@@ -236,14 +367,13 @@ class PhotoService:
 
     async def populate_photo(self, term: str, count: int = 1) -> List[Photo]:
         """
-        Baixa múltiplas imagens do LoremFlickr e salva como fotos
+        Baixa múltiplas imagens de várias fontes e salva como fotos
         """
         if count < 1 or count > 10:
             raise HTTPException(status_code=400, detail="Count must be between 1 and 10")
 
         photos = []
         for i in range(count):
-            print(f"DEBUG: Starting populate_photo {i+1}/{count} for term: {term}")
 
             # Validar e sanitizar o termo
             if not term or not term.strip():
@@ -260,72 +390,69 @@ class PhotoService:
 
             encoded_term = urllib.parse.quote(clean_term)
 
-            # URL do LoremFlickr com parâmetro rand para evitar cache
+            # Lista de fontes de imagem com fallbacks
             import time
             rand_param = int(time.time() * 1000) + i  # timestamp + índice para variar
-            url = f"https://loremflickr.com/800/600/{encoded_term}?rand={rand_param}"
 
-            print(f"DEBUG: URL gerada: {url}")
+            image_sources = [
+                # Pollinations.ai com termo específico
+                f"https://image.pollinations.ai/prompt/{encoded_term}?rand={rand_param}",
+                # Pollinations.ai com termo genérico
+                f"https://image.pollinations.ai/prompt/{encoded_term.replace(' ', '%20')}?rand={rand_param}",
+                # Picsum.photos com termo (fallback)
+                f"https://picsum.photos/800/600?random={rand_param}",
+                # LoremFlickr com termo
+                f"https://loremflickr.com/800/600/{encoded_term}?lock={rand_param}",
+                # LoremFlickr genérico
+                f"https://loremflickr.com/800/600/nature?lock={rand_param}",
+            ]
 
-            # Fazer download da imagem
-            async with httpx.AsyncClient(follow_redirects=True) as client:
+            content = None
+            actual_term = clean_term
+            download_success = False
+
+            # Tentar cada fonte até conseguir
+            for source_url in image_sources:
                 try:
-                    response = await client.get(url)
-                    response.raise_for_status()
-
-                    # Verificar se a resposta é realmente uma imagem
-                    content_type = response.headers.get('content-type', '')
-                    if not content_type.startswith('image/'):
-                        print(f"DEBUG: Invalid response type: {content_type}, trying fallback")
-                        # Tentar novamente sem termo específico (imagem aleatória)
-                        fallback_url = f"https://loremflickr.com/800/600?rand={rand_param}"
-                        response = await client.get(fallback_url)
+                    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                        response = await client.get(source_url)
                         response.raise_for_status()
 
+                        # Verificar se a resposta é realmente uma imagem
                         content_type = response.headers.get('content-type', '')
-                        if not content_type.startswith('image/'):
-                            raise HTTPException(status_code=500, detail=f"Invalid fallback response type: {content_type}")
-
-                        content = response.content
-                        if len(content) < 1000:
-                            raise HTTPException(status_code=500, detail="Downloaded fallback content is too small")
-
-                        # Ajustar o termo para indicar que foi fallback
-                        actual_term = f"{clean_term} (random)"
-                    else:
-                        content = response.content
-                        actual_term = clean_term
-
-                        # Verificar se o conteúdo não está vazio
-                        if len(content) < 1000:  # Imagens devem ter pelo menos 1KB
-                            raise HTTPException(status_code=500, detail="Downloaded content is too small")
-
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 403:
-                        # Tentar novamente sem termo específico (imagem aleatória)
-                        print(f"DEBUG: Term '{clean_term}' blocked, trying random image")
-                        fallback_url = f"https://loremflickr.com/800/600?rand={rand_param}"
-                        try:
-                            response = await client.get(fallback_url)
-                            response.raise_for_status()
-
-                            content_type = response.headers.get('content-type', '')
-                            if not content_type.startswith('image/'):
-                                raise HTTPException(status_code=500, detail=f"Invalid fallback response type: {content_type}")
-
+                        if content_type.startswith('image/'):
                             content = response.content
-                            if len(content) < 1000:
-                                raise HTTPException(status_code=500, detail="Downloaded fallback content is too small")
 
-                            # Ajustar o termo para indicar que foi fallback
-                            actual_term = f"{clean_term} (random)"
+                            # Verificar se o conteúdo não está vazio
+                            if len(content) >= 1000:  # Imagens devem ter pelo menos 1KB
+                                download_success = True
+                                print(f"Successfully downloaded from: {source_url}")
+                                break
+                            else:
+                                print(f"Content too small from: {source_url}")
+                        else:
+                            print(f"Invalid content type from {source_url}: {content_type}")
 
-                        except Exception as fallback_e:
-                            raise HTTPException(status_code=500, detail=f"Failed to download fallback image: {str(fallback_e)}")
-                    else:
-                        raise HTTPException(status_code=500, detail=f"Failed to download image: {str(e)}")
                 except Exception as e:
-                    raise HTTPException(status_code=500, detail=f"Failed to download image: {str(e)}")
+                    print(f"Failed to download from {source_url}: {str(e)}")
+                    continue
+
+            # Se nenhuma fonte funcionou, usar uma imagem de placeholder
+            if not download_success:
+                try:
+                    # Último recurso: gerar uma imagem simples via data URL
+                    import base64
+                    # Criar uma imagem simples 1x1 pixel transparente como placeholder
+                    placeholder_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+                    content = base64.b64decode(placeholder_data)
+                    actual_term = f"{clean_term} (placeholder)"
+                    download_success = True
+                    print("Using placeholder image as last resort")
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"All image sources failed, even placeholder: {str(e)}")
+
+            if not download_success:
+                raise HTTPException(status_code=500, detail="Failed to download image from any source")
 
             # Gerar nome único para o arquivo
             unique_filename = f"{uuid.uuid4()}.jpg"
@@ -361,131 +488,42 @@ class PhotoService:
     def get_photo(self, photo_id: int):
         return self.db.query(Photo).filter(Photo.id == photo_id).first()
 
-    def search_similar_photos(self, query_text: str = None, photo_id: int = None, limit: int = 10):
+    def search_similar_photos(self, query_text: str = None, photo_id: int = None, limit: int = 12):
         """
-        Busca fotos similares por texto ou por outra foto
+        Busca fotos similares usando PGVector (via VectorService)
         """
-        ai_service = AIService()
+        from app.services.vector_service import VectorService
 
-        # Tentar busca no Gemini File Search Store primeiro
-        if query_text and ai_service.store_id:
-            try:
-                gemini_results = ai_service.search_files_in_store(query_text, max_results=limit)
-                if gemini_results:
-                    # Buscar fotos no banco pelos file_ids
-                    file_ids = [result['file_id'] for result in gemini_results]
-                    photos = self.db.query(Photo).filter(Photo.gemini_file_id.in_(file_ids)).all()
+        vector_service = VectorService(self.db)
 
-                    # Criar mapa de file_id -> foto
-                    photo_map = {photo.gemini_file_id: photo for photo in photos}
-
-                    # Montar resultado
-                    results = []
-                    for gemini_result in gemini_results:
-                        file_id = gemini_result['file_id']
-                        if file_id in photo_map:
-                            photo = photo_map[file_id]
-                            results.append({
-                                "photo": photo,
-                                "similarity_score": gemini_result.get('relevance', 0)
-                            })
-
-                    if results:
-                        return {
-                            "results": results[:limit],
-                            "total": len(results),
-                            "message": f"Encontradas {len(results)} fotos via Gemini File Search",
-                            "search_method": "gemini_file_search"
-                        }
-            except Exception as e:
-                print(f"Erro na busca Gemini File Search: {str(e)}")
-                # Continua para busca por embeddings
-
-        # Fallback: busca por embeddings
-        # Buscar todas as fotos processadas
-        processed_photos = self.db.query(Photo).filter(
-            Photo.processed == True,
-            Photo.embedding.isnot(None)
-        ).all()
-
-        if not processed_photos:
-            return {
-                "results": [],
-                "total": 0,
-                "message": "Nenhuma foto processada encontrada",
-                "search_method": "embedding_search"
-            }
-
-        # Preparar embeddings
-        embeddings = [(photo.id, photo.embedding) for photo in processed_photos]
-
-        # Buscar por texto ou por foto similar
         if query_text:
-            # Primeiro: buscar fotos com correspondência exata na descrição (prioridade máxima)
-            exact_matches = []
-            if query_text:
-                query_lower = query_text.lower()
-                for photo in processed_photos:
-                    if photo.user_description and query_lower in photo.user_description.lower():
-                        exact_matches.append((photo.id, 1.0))  # Score máximo para correspondências exatas
+            results = vector_service.search_similar_photos(query_text, limit)
 
-            # Segundo: buscar fotos similares por texto nas descrições (fallback sem embeddings)
-            similar_photos = []
-            query_lower = query_text.lower()
-            for photo in processed_photos:
-                # Pular fotos que já têm correspondência exata
-                if photo.id in [eid for eid, _ in exact_matches]:
-                    continue
-                # Buscar por similaridade de texto na descrição
-                if photo.user_description and any(word.lower() in photo.user_description.lower() for word in query_text.split()):
-                    # Score baseado no número de palavras coincidentes
-                    matching_words = sum(1 for word in query_text.split() if word.lower() in photo.user_description.lower())
-                    score = min(0.9, matching_words / len(query_text.split()))  # Score máximo 0.9 para não competir com exatas
-                    similar_photos.append((photo.id, score))
-
-            # Ordenar por score decrescente e limitar
-            similar_photos.sort(key=lambda x: x[1], reverse=True)
-            similar_photos = similar_photos[:limit * 2]  # Pegar mais para ter opções
-
-            # Combinar: correspondências exatas primeiro, depois similares
-            all_similar_photos = exact_matches + similar_photos
-        elif photo_id:
-            # Buscar foto de referência
-            ref_photo = self.db.query(Photo).filter(Photo.id == photo_id).first()
-            if not ref_photo or not ref_photo.embedding:
-                raise HTTPException(status_code=404, detail="Foto de referência não encontrada ou não processada")
-
-            similar_photos = ai_service.search_similar_images(ref_photo.embedding, embeddings, limit)
-        else:
-            raise HTTPException(status_code=400, detail="Deve fornecer query_text ou photo_id")
-
-        # Buscar fotos completas pelos IDs
-        photo_ids = [photo_id for photo_id, _ in similar_photos]
-        photos = self.db.query(Photo).filter(Photo.id.in_(photo_ids)).order_by(Photo.uploaded_at.desc()).all()
-
-        # Criar mapa de ID -> foto
-        photo_map = {photo.id: photo for photo in photos}
-
-        # Montar resultado com scores
-        results = []
-        for photo_id, score in all_similar_photos:
-            if photo_id in photo_map:
-                photo = photo_map[photo_id]
-                results.append({
+            # Format results
+            formatted_results = []
+            for photo in results:
+                formatted_results.append({
                     "photo": photo,
-                    "similarity_score": score
+                    "similarity_score": 0.0 # PGVector sqlalchemy model doesn't easily return score in the object,
+                                            # usually requires a separate tuple query.
+                                            # For now we return the object, sorted by relevance.
                 })
 
-        # Reordenar por score (já está ordenado, mas garantir)
-        results.sort(key=lambda x: x["similarity_score"], reverse=True)
-        results = results[:limit]
+            return {
+                "results": formatted_results,
+                "total": len(formatted_results),
+                "message": f"Found {len(formatted_results)} photos via PGVector",
+                "search_method": "pgvector_semantic"
+            }
 
-        return {
-            "results": results,
-            "total": len(results),
-            "message": f"Encontradas {len(results)} fotos via busca por embeddings",
-            "search_method": "embedding_search"
-        }
+        elif photo_id:
+             # TODO: Implement image-to-image search via embedding comparison
+             return {
+                "results": [],
+                "total": 0,
+                "message": "Image-to-image search pending implementation",
+                "search_method": "none"
+            }
 
     def get_photo(self, photo_id: int) -> Photo:
         """

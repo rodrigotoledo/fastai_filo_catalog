@@ -7,11 +7,14 @@ from fastapi import UploadFile
 from dotenv import load_dotenv
 import json
 from langchain_huggingface import HuggingFacePipeline
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import PromptTemplate
 from transformers import pipeline
+from langchain_core.messages import HumanMessage
+import base64
+import mimetypes
 import torch
 
 load_dotenv()
@@ -24,6 +27,8 @@ class AIService:
         self.store_id = self._get_or_create_store()
         # Inicializar LangChain com modelo local
         self.llm = self._initialize_langchain_model()
+        # Initialize Embeddings
+        self.embeddings = self._initialize_embeddings()
         logger.info(f"AIService iniciado com LangChain | Store ID: {self.store_id}")
 
     def _initialize_langchain_model(self):
@@ -41,14 +46,17 @@ class AIService:
         if forced_provider:
             provider_map = {name: func for name, func in providers}
             if forced_provider in provider_map:
-                llm = provider_map[forced_provider]()
-                if llm:
-                    logger.info(f"Modelo forçado '{forced_provider}' inicializado com sucesso")
-                    return llm
-                else:
-                    logger.warning(f"Modelo forçado '{forced_provider}' falhou, tentando fallback")
+                try:
+                    llm = provider_map[forced_provider]()
+                    if llm:
+                        logger.info(f"Modelo forçado '{forced_provider}' inicializado com sucesso")
+                        return llm
+                except Exception as e:
+                    logger.warning(f"Modelo forçado '{forced_provider}' falhou, tentando outros provedores")
+                    # Remover o provedor forçado da lista de fallback
+                    providers = [(name, func) for name, func in providers if name != forced_provider]
 
-        # Tentar provedores em ordem de prioridade
+        # Tentar provedores em ordem de prioridade (exceto o forçado que já falhou)
         for provider_name, init_func in providers:
             try:
                 llm = init_func()
@@ -59,7 +67,7 @@ class AIService:
                 logger.warning(f"Falha ao inicializar {provider_name}: {str(e)}")
                 continue
 
-        logger.error("Nenhum modelo de AI conseguiu ser inicializado")
+        logger.error("Nenhum modelo de IA conseguiu inicializar")
         return None
 
     def _initialize_openai_model(self):
@@ -110,10 +118,10 @@ class AIService:
                 raise ValueError("GOOGLE_API_KEY não configurada")
 
             llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",  # ou "gemini-1.5-pro"
+                model="gemini-pro",  # Multimodal model
                 google_api_key=api_key,
-                temperature=0.7,
-                max_tokens=512
+                temperature=0.4,
+                max_tokens=1024
             )
             logger.info("Modelo Gemini inicializado via LangChain")
             return llm
@@ -168,6 +176,47 @@ class AIService:
 
         logger.warning("Usando busca simplificada sem File Search Store")
         return None
+
+    def _initialize_embeddings(self):
+        """Initialize Google Gemini Embeddings"""
+        try:
+            api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                logger.warning("No API Key for embeddings. Vector search will vary.")
+                return None
+
+            # Using the specific embedding model for Gemini
+            return GoogleGenerativeAIEmbeddings(
+                model="models/embedding-001",
+                google_api_key=api_key
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize embeddings: {e}")
+            return None
+
+    def generate_embedding(self, text: str) -> List[float]:
+        """Generate embedding vector for text using Gemini"""
+        if not self.embeddings:
+            logger.warning("Embeddings model not initialized. Returning zero vector as fallback.")
+            # Return zero vector with 512 dimensions to match pgvector schema
+            return [0.0] * 512
+
+        try:
+            embedding = self.embeddings.embed_query(text)
+            # Truncate or pad to exactly 512 dimensions to match pgvector schema
+            if len(embedding) > 512:
+                # Truncate to 512 dimensions
+                embedding = embedding[:512]
+                logger.info(f"Truncated embedding from {len(embedding)} to 512 dimensions")
+            elif len(embedding) < 512:
+                # Pad with zeros if needed
+                embedding.extend([0.0] * (512 - len(embedding)))
+                logger.warning(f"Padded embedding from {len(embedding)} to 512 dimensions")
+
+            return embedding
+        except Exception as e:
+            logger.error(f"Error generating embedding: {e}. Using fallback.")
+            return [0.0] * 512
 
 
     # ===================================================================
@@ -341,26 +390,24 @@ class AIService:
     # ===================================================================
     def process_image(self, image_path: str, user_description: str = None) -> tuple:
         """
-        Processa imagem para gerar embedding e descrição usando CLIP/LangChain
+        Processa imagem para gerar embedding e descrição usando Gemini
         Retorna (embedding, description)
         """
         try:
-            # Gerar embedding usando CLIP (mantém como está)
-            import numpy as np
-            embedding_array = np.random.rand(512).astype(np.float32)  # TODO: Implementar CLIP real
-            embedding = embedding_array.tolist()
+            # 1. Gerar descrição rica (Gemini)
+            description = self._generate_description_gemini(image_path, user_description)
 
-            # Gerar descrição usando LangChain com prompt customizado
-            description = self._generate_image_description(image_path, user_description)
+            # 2. Gerar Embedding do texto (Gemini)
+            full_text = f"{user_description or ''} {description}"
+            embedding = self.generate_embedding(full_text)
 
-            logger.info(f"Imagem processada: {os.path.basename(image_path)}")
+            logger.info(f"Imagem processada com Gemini: {os.path.basename(image_path)}")
             return embedding, description
 
         except Exception as e:
             logger.error(f"Erro ao processar imagem {image_path}: {str(e)}")
-            # Retornar valores padrão em caso de erro
-            import numpy as np
-            return np.random.rand(512).astype(np.float32).tolist(), "Erro no processamento"
+            # Retornar valores vazios em caso de erro para não quebrar o worker
+            return [], "Erro no processamento"
 
     def _generate_image_description(self, image_path: str, user_description: str = None) -> str:
         """
@@ -382,14 +429,49 @@ class AIService:
             return f"Erro na geração da descrição{f' - {user_description}' if user_description else ''}"
 
     def _generate_description_gemini(self, image_path: str, user_description: str = None) -> str:
-        """Gera descrição usando Gemini (multimodal) - versão simplificada"""
+        """Gera descrição usando Gemini (multimodal)"""
         try:
-            # Por enquanto, fallback para local até implementar multimodal corretamente
-            logger.warning("Gemini multimodal ainda não implementado, usando modelo local")
-            return self._generate_description_local(image_path, user_description)
+            # Preparing the image
+            mime_type, _ = mimetypes.guess_type(image_path)
+            if not mime_type:
+                mime_type = "image/jpeg"
+
+            with open(image_path, "rb") as image_file:
+                image_data = base64.b64encode(image_file.read()).decode("utf-8")
+
+            # 2. Prepare the prompt
+            prompt_text = """
+            Você é um especialista em análise de imagens. Descreva esta imagem em detalhes.
+            Inclua:
+            - Objetos principais e secundários
+            - Cores predominantes e estilo
+            - Texto visível (se houver)
+            - Contexto e ambiente
+
+            Responda em PORTUGUÊS do Brasil.
+            """
+
+            if user_description:
+                prompt_text += f"\nContexto adicional fornecido pelo usuário: {user_description}"
+
+            # 3. Create message with image
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{image_data}"}
+                    }
+                ]
+            )
+
+            # 4. Invoke model
+            response = self.llm.invoke([message])
+            return response.content if hasattr(response, 'content') else str(response)
 
         except Exception as e:
-            logger.error(f"Erro com Gemini: {str(e)}")
+            logger.error(f"Erro com Gemini Multimodal: {str(e)}")
+            # Fallback to local if Gemini fails (e.g. API error)
             return self._generate_description_local(image_path, user_description)
 
     def _generate_description_local(self, image_path: str, user_description: str = None) -> str:
