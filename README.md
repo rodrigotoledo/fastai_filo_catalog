@@ -1,147 +1,460 @@
-# Photo Finder Backend – FastAPI AI API
+# Photo Finder Backend
 
-API backend robusto, construído com [FastAPI](https://fastapi.tiangolo.com/), integrando recursos de IA (Machine Learning/NLP) e banco de dados PostgreSQL. Ideal para aplicações que exigem busca, análise e manipulação inteligente de fotos/imagens.
+Um sistema avançado de processamento e busca de imagens usando IA, construído com FastAPI, PostgreSQL com pgvector, e integração com múltiplos provedores de IA (OpenAI, Anthropic, Gemini, Local).
 
----
+## 🚀 Visão Geral
 
-## Sumário
+O Photo Finder é uma aplicação backend que permite:
 
-- [Photo Finder Backend – FastAPI AI API](#photo-finder-backend--fastapi-ai-api)
-  - [Sumário](#sumário)
-  - [Funcionalidades](#funcionalidades)
-  - [Requisitos](#requisitos)
-  - [Instalação e Setup](#instalação-e-setup)
-  - [Configuração de Ambiente](#configuração-de-ambiente)
-  - [Execução](#execução)
-  - [Testes](#testes)
-  - [Estrutura do Projeto (sugerida)](#estrutura-do-projeto-sugerida)
-  - [Principais Dependências](#principais-dependências)
-  - [Deploy](#deploy)
-  - [Referências](#referências)
+- **Upload e armazenamento** de imagens
+- **Processamento automático** com IA (descrições + embeddings)
+- **Busca semântica** por similaridade de texto
+- **OCR para documentos** com extração de texto
+- **Reprocessamento em lote** de imagens existentes
 
----
+## 🏗️ Arquitetura
 
-## Funcionalidades
+### Tecnologias Principais
 
-- Endpoints RESTful com FastAPI
-- Integração de IA: modelos de ML/NLP, embeddings, busca vetorial
-- Banco de dados PostgreSQL com suporte a vetores (pgvector)
-- Fila de tarefas assíncronas com Redis/RQ
-- Documentação automática via Swagger/OpenAPI
+- **Backend**: FastAPI (Python 3.12)
+- **Banco**: PostgreSQL + pgvector (embeddings)
+- **Fila**: Redis + RQ (processamento assíncrono)
+- **IA**: LangChain com múltiplos provedores
+- **OCR**: pytesseract + OpenCV
+- **Containerização**: Docker Compose
 
-## Requisitos
-
-- Python 3.8+
-- PostgreSQL 13+
-- Redis (opcional, para filas)
-- pip
-
-## Instalação e Setup
-
-1. **Clone o repositório**
-   ```bash
-   git clone https://github.com/yourusername/photo-finder.git
-   cd photo-finder/backend
-   ```
-
-2. **Crie e ative o ambiente virtual**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install --upgrade pip
-   ```
-
-3. **Instale as dependências**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **(Opcional) Gere um novo requirements.txt limpo**
-   ```bash
-   pip install pipreqs
-   pipreqs . --force
-   ```
-
-## Configuração de Ambiente
-
-Crie um arquivo `.env` com as variáveis de ambiente necessárias:
-
-```env
-DATABASE_URL=postgresql://user:password@localhost:5432/yourdatabase
-# Adicione outras variáveis conforme necessário
-```
-
-## Execução
-
-1. **(Opcional) Migrações de banco de dados**
-   ```bash
-   alembic upgrade head
-   ```
-
-2. **Inicie o servidor FastAPI**
-   ```bash
-   uvicorn app.main:app --reload
-   ```
-
-3. **Acesse a documentação interativa**
-   - [http://localhost:8000/docs](http://localhost:8000/docs)
-
-## Testes
-
-1. **Execute os testes (exemplo com pytest):**
-   ```bash
-   pytest
-   ```
-   > Adapte conforme a ferramenta de testes utilizada.
-
-## Estrutura do Projeto (sugerida)
+### Componentes
 
 ```text
-backend/
-├── app/
-│   ├── main.py         # Ponto de entrada FastAPI
-│   ├── api/           # Rotas e endpoints
-│   ├── models/        # Modelos Pydantic/SQLModel
-│   ├── services/      # Lógica de negócio e IA
-│   ├── db/            # Configuração e scripts do banco
-│   └── ...
-├── requirements.txt
-├── README.md
-├── .env
-└── ...
+├── app/                    # Código da aplicação
+│   ├── api/               # Endpoints FastAPI
+│   ├── models/            # SQLModel (SQLAlchemy + Pydantic)
+│   ├── services/          # Lógica de negócio
+│   ├── db/                # Conexão e configuração do banco
+│   └── jobs/              # Processamento assíncrono (RQ)
+├── uploads/               # Arquivos de imagem
+├── cache/                 # Modelos de IA em cache
+├── alembic/               # Migrações do banco
+└── docker-compose.yml     # Orquestração de containers
 ```
 
-## Principais Dependências
+## ✨ Funcionalidades
 
-- **FastAPI**: Framework web moderno e rápido
-- **SQLModel**: ORM para SQL/NoSQL
-- **pgvector**: Suporte a vetores no PostgreSQL
-- **sentence-transformers, transformers, torch**: Modelos de IA e embeddings
-- **Redis, rq**: Fila de tarefas assíncronas
-- **python-dotenv**: Gerenciamento de variáveis de ambiente
+### 📤 Upload de Imagens
 
-Veja todas as dependências em [`requirements.txt`](requirements.txt).
+- Upload múltiplo via API REST
+- Validação de tipos (JPEG, PNG)
+- Armazenamento otimizado
+- Metadados automáticos
 
-## Deploy
+### 🤖 Processamento com IA
 
-Sugestão de deploy (exemplo com Docker):
+- **Descrições automáticas**: Geração de texto detalhado sobre o conteúdo da imagem
+- **Embeddings semânticos**: Vetores de 512 dimensões para busca por similaridade
+- **OCR integrado**: Extração de texto de documentos/imagens
+- **Processamento assíncrono**: Background jobs com RQ
 
-```dockerfile
-# Dockerfile exemplo
-FROM python:3.12-slim
-WORKDIR /app
-COPY . .
-RUN pip install --upgrade pip && pip install -r requirements.txt
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+### 🔍 Busca Inteligente
+
+- **Busca por texto**: Similaridade semântica (não palavras-chave exatas)
+- **Resultados ranqueados**: Por relevância usando embeddings
+- **Filtro opcional**: Apenas imagens processadas
+- **Paginação**: Resultados eficientes
+
+### 🖼️ Busca Visual Avançada (ChromaDB)
+
+- **Busca semântica por texto**: Usando SentenceTransformers + re-ranking com LLM
+- **Busca reversa por imagem**: Encontre imagens visualmente similares
+- **Captions ricos com IA**: Descrições detalhadas geradas por multimodal LLMs
+- **Embeddings duplos**: CLIP para imagens + SentenceTransformers para texto
+- **Re-ranking inteligente**: LLM filtra falsos positivos
+
+### 🔄 Reprocessamento
+
+- **Endpoint dedicado**: Marcar todas as imagens para reprocessamento
+- **Sistema de fallback**: OpenAI → Local → Anthropic → Gemini
+- **Monitoramento**: Status em tempo real do progresso
+- **Continuação automática**: Scheduler processa em background
+
+## 🛠️ Instalação e Setup
+
+### Pré-requisitos
+
+- Docker e Docker Compose
+- 4GB+ RAM (para modelos de IA)
+- Chaves de API (opcional, mas recomendado)
+
+### 1. Clone e Setup
+
+```bash
+git clone <repository>
+cd photo-finder/backend
 ```
 
-## Referências
+### 2. Configuração de Ambiente
 
-- [FastAPI Docs](https://fastapi.tiangolo.com/)
-- [SQLModel](https://sqlmodel.tiangolo.com/)
-- [pgvector](https://github.com/pgvector/pgvector)
-- [Sentence Transformers](https://www.sbert.net/)
-- [Uvicorn](https://www.uvicorn.org/)
+```bash
+# Copie o arquivo de exemplo
+cp .env.example .env
+
+# Configure as chaves de API (recomendado)
+echo "OPENAI_API_KEY=sk-your-key" >> .env
+echo "ANTHROPIC_API_KEY=sk-ant-your-key" >> .env
+echo "GOOGLE_API_KEY=your-gemini-key" >> .env
+```
+
+### 3. Inicialização
+
+```bash
+# Build e start dos serviços
+docker compose up -d
+
+# Aplicar migrações do banco
+docker compose exec app alembic upgrade head
+
+# Verificar status
+docker compose ps
+```
+
+### 4. Verificar Funcionamento
+
+```bash
+# API deve estar rodando em http://localhost:8000
+curl http://localhost:8000/docs
+```
+
+## 📚 API Endpoints
+
+### Upload de Imagens
+
+```http
+POST /api/v1/photos/upload
+Content-Type: multipart/form-data
+
+files: <arquivos de imagem>
+description: "Descrição opcional"
+```
+
+### Listar Imagens
+
+```http
+GET /api/v1/photos/?page=1&page_size=12&processed_only=true
+```
+
+**Parâmetros:**
+
+- `page`: Página atual (padrão: 1)
+- `page_size`: Itens por página (padrão: 12, máx: 100)
+- `processed_only`: Apenas imagens processadas (padrão: false)
+
+### Busca por Texto
+
+```http
+GET /api/v1/photos/search/text?q=gato%20preto&limit=10
+```
+
+### Download de Imagem
+
+```http
+GET /api/v1/photos/file/{photo_id}
+```
+
+### Reprocessamento
+
+```http
+POST /api/v1/photos/reprocess
+```
+
+### Estatísticas de Processamento
+
+```http
+GET /api/v1/photos/processing/stats
+```
+
+**Resposta:**
+
+```json
+{
+  "status": "processing",
+  "total_photos": 76,
+  "processed_photos": 23,
+  "processing_percentage": 30.26,
+  "estimated_remaining_time": "0:12:30",
+  "recent_processed_photos": [...]
+}
+```
+
+### 🖼️ Endpoints de Busca Visual (ChromaDB)
+
+#### Adicionar Imagem à Busca Visual
+
+```http
+POST /api/v1/photos/visual-search/add
+Content-Type: multipart/form-data
+
+file: <arquivo de imagem>
+description: "Descrição opcional"
+tags: "tag1,tag2,tag3"
+```
+
+#### Busca Visual por Texto
+
+```http
+GET /api/v1/photos/visual-search/text?q=gato%20preto&limit=8
+```
+
+**Resposta:**
+
+```json
+{
+  "query": "gato preto",
+  "results": [
+    {
+      "image_path": "/path/to/image.jpg",
+      "similarity": 0.87,
+      "caption": "Um gato preto brilhante...",
+      "tags": "animal,pet",
+      "file_name": "cat.jpg"
+    }
+  ],
+  "total_found": 5
+}
+```
+
+#### Busca Reversa por Imagem
+
+```http
+POST /api/v1/photos/visual-search/image
+Content-Type: multipart/form-data
+
+file: <imagem de consulta>
+limit: 8
+```
+
+#### Estatísticas da Busca Visual
+
+```http
+GET /api/v1/photos/visual-search/stats
+```
+
+**Resposta:**
+
+```json
+{
+  "total_images": 42,
+  "collection_name": "images",
+  "embedding_dimensions": 512,
+  "status": "active"
+}
+```
+
+## 🔄 Migração para LangChain
+
+### Contexto
+
+O sistema foi migrado de uma implementação direta com Gemini API para uma arquitetura baseada em LangChain, oferecendo:
+
+- **Múltiplos provedores**: OpenAI, Anthropic, Gemini, Local
+- **Fallback automático**: Sistema robusto de contingência
+- **OCR integrado**: Extração de texto de imagens
+- **Melhor qualidade**: Prompts otimizados e processamento avançado
+
+### Benefícios da Migração
+
+- ✅ **Resiliência**: Não depende de um único provedor
+- ✅ **Custo**: Opção de usar modelos locais gratuitos
+- ✅ **Qualidade**: Melhor controle sobre geração de texto
+- ✅ **Escalabilidade**: Fácil adição de novos provedores
+
+## 📊 Monitoramento
+
+### Script de Acompanhamento
+
+```bash
+# Monitor em tempo real (atualiza a cada 30s)
+./monitor_progress.sh
+
+# Ou via API
+curl http://localhost:8000/api/v1/photos/processing/stats
+```
+
+### Verificar Status dos Serviços
+
+```bash
+# Status dos containers
+docker compose ps
+
+# Logs do worker
+docker compose logs -f worker
+
+# Logs do scheduler
+docker compose logs -f scheduler
+```
+
+### Métricas de Performance
+
+- **Processamento**: ~15 segundos por imagem
+- **Busca**: < 100ms para consultas
+- **Armazenamento**: Embeddings de 512 dimensões
+- **OCR**: Suporte para 100+ idiomas
+
+## 🔧 Configuração Avançada
+
+### Variáveis de Ambiente
+
+```bash
+# Provedor de IA prioritário
+AI_MODEL_TYPE=openai  # openai, anthropic, gemini, local
+
+# Chaves de API
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GOOGLE_API_KEY=...
+
+# Configurações do banco
+DATABASE_URL=postgresql://user:pass@db:5432/photo_finder
+
+# Scheduler
+SCHEDULER_INTERVAL_SECONDS=10
+```
+
+### Modelos de IA Disponíveis
+
+#### OpenAI (Recomendado)
+
+- **Modelo**: GPT-4o-mini
+- **Custo**: Baixo para descrições
+- **Qualidade**: Excelente
+- **Velocidade**: Rápida
+
+#### Local (Gratuito)
+
+- **Modelo**: GPT-2 ou DialoGPT
+- **Custo**: Zero
+- **Limitações**: Menos preciso, sem visão
+- **Uso**: Desenvolvimento/testing
+
+#### Anthropic
+
+- **Modelo**: Claude 3 Haiku
+- **Custo**: Médio
+- **Qualidade**: Muito boa
+- **Ética**: Foco em segurança
+
+#### Google Gemini
+
+- **Modelo**: Gemini 1.5 Flash
+- **Custo**: Competitivo
+- **Multimodal**: Bom para imagens
+- **Integração**: Nativa do Google
+
+## 🚨 Troubleshooting
+
+### Problemas Comuns
+
+#### 1. Worker não processa imagens
+
+```bash
+# Verificar logs
+docker compose logs worker
+
+# Verificar Redis
+docker compose exec redis redis-cli ping
+```
+
+#### 2. Erro de API key
+
+```text
+Erro: OPENAI_API_KEY não configurada
+Solução: Adicionar chave no .env ou usar modelo local
+```
+
+#### 3. Memória insuficiente
+
+```text
+Erro: CUDA out of memory
+Solução: Usar modelo local menor ou aumentar RAM
+```
+
+#### 4. OCR não funciona
+
+```bash
+# Verificar instalação do Tesseract
+docker compose exec app tesseract --version
+```
+
+### Logs e Debug
+
+```bash
+# Todos os logs
+docker compose logs
+
+# Logs específicos
+docker compose logs app
+docker compose logs worker
+docker compose logs scheduler
+
+# Limpar e reconstruir
+docker compose down -v
+docker compose up --build
+```
+
+## 📈 Performance e Escalabilidade
+
+### Otimizações Implementadas
+
+- **Processamento assíncrono**: RQ para background jobs
+- **Embeddings eficientes**: pgvector para busca rápida
+- **Cache inteligente**: Modelos de IA em disco
+- **Fallback automático**: Sem pontos únicos de falha
+
+### Limites e Recomendações
+
+- **Imagens por upload**: Até 10 simultâneas
+- **Tamanho máximo**: 10MB por imagem
+- **Busca**: Até 50 resultados por consulta
+- **Processamento**: ~100 imagens/hora (depende da API)
+
+### Escalabilidade
+
+- **Horizontal**: Múltiplos workers via Redis
+- **Vertical**: Mais RAM para modelos maiores
+- **Cloud**: Fácil migração para Kubernetes
+
+## 🤝 Contribuição
+
+### Desenvolvimento Local
+
+```bash
+# Instalar dependências
+pip install -r requirements.txt
+
+# Rodar testes
+python test_ocr.py
+
+# Verificar linting
+# (adicionar ferramentas de lint se necessário)
+```
+
+### Estrutura de Código
+
+- **API**: Endpoints RESTful em `/api/v1/`
+- **Services**: Lógica de negócio isolada
+- **Models**: SQLModel para type safety
+- **Jobs**: RQ para processamento assíncrono
+
+## 📄 Licença
+
+Este projeto é distribuído sob a licença MIT. Veja o arquivo LICENSE para detalhes.
+
+## 🙋 Suporte
+
+Para questões, bugs ou sugestões:
+
+1. Verifique os logs: `docker compose logs`
+2. Teste com dados simples
+3. Consulte a documentação da API: `/docs`
 
 ---
-Sinta-se à vontade para contribuir ou sugerir melhorias!
+
+Desenvolvido usando FastAPI, LangChain e pgvector

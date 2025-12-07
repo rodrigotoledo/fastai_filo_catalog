@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment variables
+.env
+.env.local
+.env.test
+.env.dev
+.env.prod
+
+# VSCode
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test and coverage
+htmlcov/
+.coverage
+.tox/
+.pytest_cache/
+
+# Logs
+*.log
+
+# Migrations (se usar Alembic)
+migrations/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# AI/ML Models and Cache
+cache/
+.huggingface/
+*.h5
+*.pb
+*.onnx
+*.pkl
+*.joblib
+
+# Docker
+.dockerignore
+
+# Others
+*.sqlite3
+*.db
+uploads/*.*
+!uploads/.keep
+data/chroma*
