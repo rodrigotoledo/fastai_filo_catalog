@@ -73,11 +73,17 @@ class PhotoService:
             # 2. Generate Embedding for the description
             # We combine user_description + rich_description for better semantic coverage
             full_text_context = f"{user_description or ''} {rich_description}"
-            logger.info(f"Generating embedding for {unique_filename}...")
+            logger.info(f"Generating text embedding for {unique_filename}...")
             embedding = ai_service.generate_embedding(full_text_context)
+
+            # 3. Generate Image Embedding using CLIP
+            logger.info(f"Generating image embedding for {unique_filename}...")
+            image_embedding = ai_service.generate_image_embedding(str(file_path))
 
             if embedding:
                 photo.embedding = embedding
+            if image_embedding:
+                photo.image_embedding = image_embedding
                 photo.processed = True
 
             self.db.add(photo)
@@ -491,39 +497,33 @@ class PhotoService:
     def search_similar_photos(self, query_text: str = None, photo_id: int = None, limit: int = 12):
         """
         Busca fotos similares usando PGVector (via VectorService)
+        Returns list of dicts with 'photo_id' and 'similarity', matching ChromaDB format.
         """
         from app.services.vector_service import VectorService
 
         vector_service = VectorService(self.db)
 
         if query_text:
-            results = vector_service.search_similar_photos(query_text, limit)
-
-            # Format results
-            formatted_results = []
-            for photo in results:
-                formatted_results.append({
-                    "photo": photo,
-                    "similarity_score": 0.0 # PGVector sqlalchemy model doesn't easily return score in the object,
-                                            # usually requires a separate tuple query.
-                                            # For now we return the object, sorted by relevance.
-                })
-
-            return {
-                "results": formatted_results,
-                "total": len(formatted_results),
-                "message": f"Found {len(formatted_results)} photos via PGVector",
-                "search_method": "pgvector_semantic"
-            }
+            return vector_service.search_similar_photos(query_text, limit)
 
         elif photo_id:
-             # TODO: Implement image-to-image search via embedding comparison
-             return {
-                "results": [],
-                "total": 0,
-                "message": "Image-to-image search pending implementation",
-                "search_method": "none"
-            }
+            # Image-to-image search: find photos similar to the given photo
+            target_photo = self.get_photo(photo_id)
+            if not target_photo or not target_photo.image_embedding:
+                return []
+
+            # Search using the target photo's image embedding
+            results = vector_service.search_similar_photos_by_embedding(target_photo.image_embedding, limit)
+            return results
+
+    def search_similar_photos_by_embedding(self, embedding: List[float], limit: int = 12):
+        """
+        Search photos similar to a given embedding vector.
+        """
+        from app.services.vector_service import VectorService
+
+        vector_service = VectorService(self.db)
+        return vector_service.search_similar_photos_by_embedding(embedding, limit)
 
     def get_photo(self, photo_id: int) -> Photo:
         """

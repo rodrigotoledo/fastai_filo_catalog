@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 import base64
 import mimetypes
 import torch
+from transformers import CLIPProcessor, CLIPModel
 
 load_dotenv()
 
@@ -29,6 +30,8 @@ class AIService:
         self.llm = self._initialize_langchain_model()
         # Initialize Embeddings
         self.embeddings = self._initialize_embeddings()
+        # Initialize CLIP for image embeddings
+        self.clip_model, self.clip_processor = self._initialize_clip()
         logger.info(f"AIService iniciado com LangChain | Store ID: {self.store_id}")
 
     def _initialize_langchain_model(self):
@@ -193,6 +196,37 @@ class AIService:
         except Exception as e:
             logger.error(f"Failed to initialize embeddings: {e}")
             return None
+
+    def _initialize_clip(self):
+        """Initialize CLIP model for image embeddings"""
+        try:
+            model_name = "openai/clip-vit-base-patch32"
+            model = CLIPModel.from_pretrained(model_name)
+            processor = CLIPProcessor.from_pretrained(model_name)
+            logger.info(f"CLIP model initialized: {model_name}")
+            return model, processor
+        except Exception as e:
+            logger.error(f"Failed to initialize CLIP: {e}")
+            return None, None
+
+    def generate_image_embedding(self, image_path: str) -> List[float]:
+        """Generate embedding vector for image using CLIP"""
+        if not self.clip_model or not self.clip_processor:
+            logger.warning("CLIP model not initialized. Returning zero vector as fallback.")
+            return [0.0] * 512
+
+        try:
+            from PIL import Image
+            image = Image.open(image_path)
+            inputs = self.clip_processor(images=image, return_tensors="pt")
+            with torch.no_grad():
+                outputs = self.clip_model.get_image_features(**inputs)
+            embedding = outputs.squeeze().tolist()
+            # CLIP embeddings are 512 dimensions, perfect
+            return embedding
+        except Exception as e:
+            logger.error(f"Error generating image embedding: {e}")
+            return [0.0] * 512
 
     def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding vector for text using Gemini"""

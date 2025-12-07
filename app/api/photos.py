@@ -244,13 +244,13 @@ def search_photos_with_agent(
 
             # Extract search results from agent response
             # For now, fallback to direct search while we parse agent results
-            all_results = visual_search.search_by_text(q, top_k=1000)
+            all_results = photo_service.search_similar_photos(query_text=q, limit=1000)
 
         except Exception as agent_error:
             logger.warning(f"Agent search failed, using direct search: {agent_error}")
             logger.warning(f"⚠️ Agent failed: {agent_error}")
             # Fallback to direct search
-            all_results = visual_search.search_by_text(q, top_k=1000)
+            all_results = photo_service.search_similar_photos(query_text=q, limit=1000)
 
         # Paginate results
         total_results = len(all_results)
@@ -284,13 +284,12 @@ def search_photos_by_text(
     db: Session = Depends(get_db)
 ):
     """
-    Search photos by text using ChromaDB semantic search
+    Search photos by text using PGVector semantic search
     """
     try:
         photo_service = PhotoService(db)
-        visual_search = VisualSearchService()
-        # Get all results first (since ChromaDB doesn't support pagination directly)
-        all_results = visual_search.search_by_text(q, top_k=1000)  # Get many results
+        # Get all results first (since PGVector doesn't support offset easily for now)
+        all_results = photo_service.search_similar_photos(query_text=q, limit=1000)  # Get many results
 
         # Paginate the results
         total_results = len(all_results)
@@ -321,7 +320,7 @@ async def search_photos_by_image(
     db: Session = Depends(get_db)
 ):
     """
-    Reverse image search - find visually similar photos
+    Reverse image search - find visually similar photos using PGVector
     """
     try:
         # Save uploaded file temporarily
@@ -331,12 +330,19 @@ async def search_photos_by_image(
             buffer.write(content)
 
         photo_service = PhotoService(db)
-        visual_search = VisualSearchService()
-        # Get all results first
-        all_results = visual_search.search_by_image(temp_path, top_k=1000)
+        # Generate embedding for the uploaded image
+        from app.services.ai_service import AIService
+        ai_service = AIService()
+        query_embedding = ai_service.generate_image_embedding(temp_path)
 
         # Clean up temp file
         os.unlink(temp_path)
+
+        if not query_embedding:
+            raise HTTPException(status_code=500, detail="Failed to generate image embedding")
+
+        # Search similar photos using the embedding
+        all_results = photo_service.search_similar_photos_by_embedding(query_embedding, limit=1000)
 
         # Paginate the results
         start_idx = (page - 1) * page_size
@@ -515,17 +521,14 @@ def search_photos_fast(
     db: Session = Depends(get_db)
 ):
     """
-    Fast semantic search using optimized ChromaDB with caching (Phase 4)
+    Fast semantic search using PGVector with caching (Phase 4)
     Bypasses LangChain agent for maximum speed
     """
     try:
-        from app.services.visual_search_service import VisualSearchService
-
-        visual_search = VisualSearchService()
         photo_service = PhotoService(db)
 
-        # Use optimized search_by_text method directly
-        search_results = visual_search.search_by_text(q, top_k=top_k)
+        # Use PGVector search
+        search_results = photo_service.search_similar_photos(query_text=q, limit=top_k)
 
         # Convert to API response format
         results = []

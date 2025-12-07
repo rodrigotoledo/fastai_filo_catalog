@@ -16,6 +16,7 @@ class Photo(SQLModel, table=True):
     processed: bool = Field(default=False)
     # Campos para IA
     embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(512)))
+    image_embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(512)))
     description: Optional[str] = None
     user_description: Optional[str] = None  # Prompt descritivo fornecido pelo usuário
     gemini_file_id: Optional[str] = None  # ID do arquivo no Gemini File Search Store
