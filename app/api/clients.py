@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Form, UploadFile, File
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Annotated
+from pydantic import BaseModel
 from app.db.database import get_db
 from app.services.client_service import ClientService
 from app.services.document_parser_service import DocumentParserService
@@ -10,6 +11,43 @@ from app.schemas.client import (
     ClientCreate, ClientUpdate, ClientResponse,
     PaginatedClientsResponse
 )
+
+# Modelo Pydantic simples para arquivo validado
+class ValidatedFile(BaseModel):
+    file: UploadFile
+
+# Dependência para arquivo validado com validação explícita
+async def get_validated_file(file: UploadFile) -> ValidatedFile:
+    """Dependência FastAPI que valida arquivo explicitamente."""
+    # Validar extensão do arquivo
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Nome do arquivo é obrigatório")
+
+    allowed_extensions = {
+        'pdf', 'docx', 'png', 'jpg', 'jpeg', 'tiff', 'bmp',
+        'csv', 'xlsx', 'xls', 'md', 'txt'
+    }
+
+    file_extension = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tipo de arquivo não suportado. Use: {', '.join(allowed_extensions)}"
+        )
+
+    # Validar tamanho do arquivo (10MB)
+    content = await file.read()
+    file_size = len(content)
+
+    if file_size > 10 * 1024 * 1024:  # 10MB
+        raise HTTPException(status_code=400, detail="Arquivo muito grande. Máximo: 10MB")
+
+    # Resetar ponteiro do arquivo para que possa ser lido novamente
+    import io
+    file.file = io.BytesIO(content)
+
+    # Retornar arquivo validado
+    return ValidatedFile(file=file)
 
 router = APIRouter()
 
@@ -42,6 +80,35 @@ def get_clients(
     """
     client_service = ClientService(db)
     return client_service.get_clients(page=page, page_size=page_size, search=search)
+
+@router.get("/search-similar", response_model=List[dict])
+def search_similar_clients(
+    q: str = Query(..., description="Texto para busca semântica de clientes (ex: 'cliente de São Paulo com email gmail')", min_length=3),
+    limit: int = Query(10, description="Número máximo de resultados", ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """
+    Busca clientes usando similaridade semântica vetorial.
+
+    Esta endpoint permite encontrar clientes através de busca semântica,
+    não apenas busca textual tradicional. Por exemplo:
+    - "cliente de São Paulo" - encontra clientes com endereço em SP
+    - "pessoa com email gmail" - encontra clientes com emails @gmail.com
+    - "cliente nascido em 1980" - encontra clientes nascidos nessa década
+
+    **Como funciona:**
+    1. Gera embedding vetorial da query usando IA (CLIP)
+    2. Compara com embeddings armazenados dos clientes
+    3. Retorna clientes ordenados por similaridade
+
+    **Limitações atuais:**
+    - Apenas clientes criados via upload de documento têm embeddings
+    - Clientes criados manualmente não têm embeddings vetoriais
+    """
+    client_service = ClientService(db)
+    results = client_service.search_similar_clients(q, limit)
+
+    return results
 
 @router.get("/{client_id}", response_model=ClientResponse)
 def get_client(
@@ -116,7 +183,7 @@ def populate_clients(
 
 @router.post("/upload-document", response_model=dict)
 async def upload_document(
-    file: UploadFile = File(..., description="Arquivo a ser processado (PDF, DOCX, imagem, CSV, XLSX, MD, TXT)"),
+    validated_file: Annotated[ValidatedFile, Depends(get_validated_file)],
     create_client: bool = Form(False, description="Se verdadeiro, cria o cliente automaticamente se os dados forem válidos"),
     extraction_prompt: Optional[str] = Form(None, description="Prompt personalizado para orientar a extração de dados (ex: 'Extraia nome, email e telefone do currículo')"),
     db: Session = Depends(get_db)
@@ -151,42 +218,21 @@ async def upload_document(
     Retorna os dados extraídos e informações sobre o processamento.
     Se create_client=True e dados válidos, também retorna o cliente criado.
     """
-    # Validar tipo de arquivo
-    allowed_extensions = {
-        'pdf', 'docx', 'png', 'jpg', 'jpeg', 'tiff', 'bmp',
-        'csv', 'xlsx', 'xls', 'md', 'txt'
-    }
-
+    # Arquivo já validado pela dependência - obter dados
+    file = validated_file.file
     file_extension = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
-    if file_extension not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Tipo de arquivo não suportado. Use: {', '.join(allowed_extensions)}"
-        )
 
-    # Validar tamanho do arquivo (máximo 10MB)
-    file_size = 0
+    # Ler conteúdo do arquivo (já validado quanto ao tamanho)
     content = await file.read()
     file_size = len(content)
-
-    if file_size > 10 * 1024 * 1024:  # 10MB
-        raise HTTPException(status_code=400, detail="Arquivo muito grande. Máximo: 10MB")
-
-    # Salvar arquivo temporariamente
-    import tempfile
-    import os
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
-        temp_file.write(content)
-        temp_file_path = temp_file.name
 
     try:
         # Inicializar serviços
         ai_service = AIService()
         document_parser = DocumentParserService(ai_service)
 
-        # Processar documento
-        extracted_data = document_parser.parse_document(temp_file_path, file.filename, extraction_prompt)
+        # Processar documento diretamente dos bytes (sem arquivo temporário)
+        extracted_data = document_parser.parse_document_from_bytes(content, file.filename, extraction_prompt)
 
         # Validar dados extraídos
         validation_errors = document_parser.validate_extracted_data(extracted_data)
@@ -203,51 +249,11 @@ async def upload_document(
 
         # Criar cliente se solicitado e dados forem válidos
         if create_client and len(validation_errors) == 0 and extracted_data.get('name'):
-            try:
-                client_service = ClientService(db)
+            client_service = ClientService(db)
+            created_client = client_service.create_client_from_extracted_data(extracted_data)
 
-                # Sempre gerar email se não houver um válido
-                email = extracted_data.get('email')
-                if not email:
-                    # Usar nome para gerar email único
-                    name_clean = extracted_data['name'].lower().replace(' ', '.').replace('ç', 'c').replace('ã', 'a').replace('õ', 'o')
-                    name_clean = ''.join(c for c in name_clean if c.isalnum() or c == '.')
-                    email = f"{name_clean}@temp.document"
-
-                client_data = ClientCreate(
-                    name=extracted_data['name'],
-                    email=email,
-                    phone=extracted_data.get('phone'),
-                    documents={
-                        'cpf': extracted_data.get('cpf'),
-                        'birth_date': extracted_data.get('date_of_birth')
-                    },
-                    addresses=[]
-                )
-
-                # Adicionar endereço se disponível (apenas campos obrigatórios)
-                address_data = extracted_data.get('address', {})
-                if address_data.get('street') or address_data.get('city'):
-                    from app.schemas.client import ClientAddressCreate
-                    address = ClientAddressCreate(
-                        street=address_data.get('street') or "Endereço não informado",
-                        number=address_data.get('number') or "S/N",
-                        neighborhood=address_data.get('neighborhood') or "Centro",
-                        city=address_data.get('city') or "São Paulo",
-                        state=address_data.get('state') or "SP",
-                        zip_code=address_data.get('postal_code') or "00000-000"
-                    )
-                    client_data.addresses = [address]
-
-                # Criar cliente
-                created_client = client_service.create_client(client_data)
-
-                response["client_created"] = True
-                response["created_client"] = created_client
-
-            except Exception as e:
-                response["client_creation_error"] = str(e)
-                response["client_created"] = False
+            response["client_created"] = True
+            response["created_client"] = created_client
         else:
             response["client_created"] = False
 
@@ -255,8 +261,3 @@ async def upload_document(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro no processamento: {str(e)}")
-
-    finally:
-        # Limpar arquivo temporário
-        if os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)

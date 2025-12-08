@@ -20,3 +20,4 @@ class Photo(SQLModel, table=True):
     description: Optional[str] = None
     user_description: Optional[str] = None  # Prompt descritivo fornecido pelo usuário
     gemini_file_id: Optional[str] = None  # ID do arquivo no Gemini File Search Store
+    image_data: Optional[bytes] = None  # Raw image bytes for CLIP processing

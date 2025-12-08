@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
-from typing import List, Optional
+from typing import List, Optional, Dict
 from app.models.client import Client, ClientAddress
 from app.schemas.client import (
     ClientCreate, ClientUpdate, ClientResponse,
@@ -8,10 +8,16 @@ from app.schemas.client import (
 )
 import re
 from datetime import datetime
+from app.services.document_parser_service import DocumentParserService
+from app.services.ai_service import AIService
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ClientService:
     def __init__(self, db: Session):
         self.db = db
+        self.ai_service = AIService()
 
     def _validate_cpf(self, cpf: str) -> bool:
         """Valida CPF brasileiro"""
@@ -370,6 +376,70 @@ class ClientService:
 
         return self._client_to_response(client)
 
+    def create_client_from_extracted_data(self, extracted_data: dict) -> ClientResponse:
+        """
+        Cria cliente a partir de dados extraídos de documento.
+        Gera embedding vetorial para busca semântica.
+        Lança exceções se houver problemas na criação.
+        """
+        # Gerar email simples se não houver um válido
+        email = extracted_data.get('email')
+        if not email:
+            # Usar nome simplificado para gerar email único
+            name_simple = extracted_data['name'].lower().replace(' ', '.')
+            # Remover caracteres não alfanuméricos exceto ponto
+            import re
+            name_simple = re.sub(r'[^a-z0-9.]', '', name_simple)
+            email = f"{name_simple}@temp.document"
+
+        client_data = ClientCreate(
+            name=extracted_data['name'],
+            email=email,
+            phone=extracted_data.get('phone'),
+            documents={
+                'cpf': extracted_data.get('cpf'),
+                'birth_date': extracted_data.get('date_of_birth')
+            },
+            addresses=[]
+        )
+
+        # Adicionar endereço se disponível (apenas campos obrigatórios)
+        address_data = extracted_data.get('address', {})
+        if address_data.get('street') or address_data.get('city'):
+            address = ClientAddressCreate(
+                street=address_data.get('street') or "Endereço não informado",
+                number=address_data.get('number') or "S/N",
+                neighborhood=address_data.get('neighborhood') or "Centro",
+                city=address_data.get('city') or "São Paulo",
+                state=address_data.get('state') or "SP",
+                zip_code=address_data.get('postal_code') or "00000-000"
+            )
+            client_data.addresses = [address]
+
+        # Criar cliente
+        client = self.create_client(client_data)
+
+        # Gerar embedding vetorial para busca semântica
+        try:
+            document_parser = DocumentParserService(self.ai_service)
+            embedding = document_parser.generate_client_embedding(extracted_data)
+
+            if embedding:
+                # Atualizar cliente com embedding
+                db_client = self.db.query(Client).filter(Client.id == client.id).first()
+                if db_client:
+                    db_client.embedding = embedding
+                    db_client.processed = True  # Marcar como processado
+                    self.db.commit()
+                    self.db.refresh(db_client)
+        except Exception as e:
+            # Log do erro mas não falha a criação do cliente
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to generate embedding for client {client.id}: {str(e)}")
+
+        return client
+
     def process_client(self, client_id: int) -> Client:
         """Processa cliente com IA (atualmente apenas marca como processado)"""
         client = self.db.query(Client).filter(Client.id == client_id).first()
@@ -383,3 +453,55 @@ class ClientService:
         self.db.refresh(client)
 
         return self._client_to_response(client)
+
+    def search_similar_clients(self, query: str, limit: int = 10) -> List[Dict]:
+        """
+        Busca clientes usando similaridade semântica vetorial.
+        Usa AIService para gerar embeddings da query e busca no PostgreSQL com pgvector.
+
+        Args:
+            query: Texto da busca (ex: "cliente de São Paulo com email gmail")
+            limit: Número máximo de resultados
+
+        Returns:
+            Lista de dicionários com 'client_id', 'similarity' e 'client_data'
+        """
+        try:
+            # Gerar embedding da query
+            query_embedding = self.ai_service.generate_embedding(query)
+            if not query_embedding:
+                logger.warning("Não foi possível gerar embedding para a query")
+                return []
+
+            # Buscar clientes similares no PostgreSQL usando pgvector
+            from sqlalchemy import func
+
+            results = self.db.query(
+                Client,
+                Client.embedding.cosine_distance(query_embedding).label('distance')
+            ).filter(
+                Client.embedding.isnot(None),  # Apenas clientes com embedding
+                Client.is_active == True  # Apenas clientes ativos
+            ).order_by(
+                Client.embedding.cosine_distance(query_embedding)
+            ).limit(limit).all()
+
+            # Formatar resultados
+            similar_clients = []
+            for client, distance in results:
+                similarity = 1 - distance  # Converter distância para similaridade (0-1)
+
+                # Apenas incluir resultados com similaridade mínima
+                if similarity >= 0.3:  # Threshold ajustável
+                    similar_clients.append({
+                        'client_id': client.id,
+                        'similarity': round(float(similarity), 3),
+                        'client_data': self._client_to_response(client)
+                    })
+
+            logger.info(f"Encontrados {len(similar_clients)} clientes similares para query: {query[:50]}...")
+            return similar_clients
+
+        except Exception as e:
+            logger.error(f"Erro na busca vetorial de clientes: {str(e)}")
+            return []

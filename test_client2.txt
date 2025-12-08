@@ -1,0 +1,7 @@
+Nome: Maria Santos
+CPF: 987.654.321-00
+Email: maria.santos@email.com
+Telefone: (21) 88888-8888
+Endereço: Avenida Brasil, 456
+Rio de Janeiro - RJ
+CEP: 20000-000

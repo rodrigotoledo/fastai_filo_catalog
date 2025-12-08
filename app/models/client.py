@@ -1,7 +1,8 @@
 from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, Column
 from typing import Optional, List
 from datetime import datetime
+from pgvector.sqlalchemy import Vector
 
 class ClientAddress(SQLModel, table=True):
     __tablename__ = 'client_addresses'
@@ -33,6 +34,10 @@ class Client(SQLModel, table=True):
     birth_date: Optional[datetime] = None
     is_active: bool = Field(default=True)
     processed: bool = Field(default=False)
+
+    # Embedding vetorial para busca semântica (512 dimensões - CLIP)
+    embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(512)))
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

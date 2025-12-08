@@ -18,6 +18,7 @@ class PhotoResponse(BaseModel):
     description: Optional[str] = None
     user_description: Optional[str] = None
     justification: Optional[str] = None  # Justificativa da busca (opcional)
+    similarity_score: Optional[float] = None  # Score de similaridade para buscas
 
     class Config:
         from_attributes = True
@@ -31,10 +32,10 @@ class SearchResponse(BaseModel):
     message: Optional[str] = None
 
 class PaginatedPhotosResponse(BaseModel):
-    photos: List[PhotoResponse]
+    results: List[PhotoResponse]
     total: int
     page: int
     page_size: int
-    total_pages: int
+    total_found: int
     has_next: bool
     has_prev: bool

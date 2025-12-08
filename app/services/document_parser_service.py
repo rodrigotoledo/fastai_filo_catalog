@@ -56,6 +56,96 @@ class DocumentParserService:
         # Use AI to extract structured client data
         return self._extract_client_data_with_ai(text_content, filename, extraction_prompt)
 
+    def parse_document_from_bytes(self, file_content: bytes, filename: str, extraction_prompt: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Parse a document from bytes content and extract client information using AI.
+        Avoids creating temporary files when possible.
+
+        Args:
+            file_content: File content as bytes
+            filename: Original filename with extension
+
+        Returns:
+            Dict containing extracted client data
+        """
+        file_extension = Path(filename).suffix.lower()
+
+        # Extract text based on file type - try to work in memory when possible
+        text_content = self._extract_text_from_bytes(file_content, file_extension, filename)
+
+        if not text_content:
+            raise ValueError(f"Could not extract text from {filename}")
+
+        # Use AI to extract structured client data
+        return self._extract_client_data_with_ai(text_content, filename, extraction_prompt)
+
+    def generate_client_embedding(self, extracted_data: Dict[str, Any]) -> Optional[List[float]]:
+        """
+        Generate embedding vector for client data to enable semantic search.
+
+        Args:
+            extracted_data: Dictionary with extracted client information
+
+        Returns:
+            512-dimensional embedding vector or None if generation fails
+        """
+        try:
+            # Create a comprehensive text representation of the client
+            client_text_parts = []
+
+            if extracted_data.get('name'):
+                client_text_parts.append(f"Nome: {extracted_data['name']}")
+
+            if extracted_data.get('email'):
+                client_text_parts.append(f"Email: {extracted_data['email']}")
+
+            if extracted_data.get('cpf'):
+                client_text_parts.append(f"CPF: {extracted_data['cpf']}")
+
+            if extracted_data.get('phone'):
+                client_text_parts.append(f"Telefone: {extracted_data['phone']}")
+
+            if extracted_data.get('date_of_birth'):
+                client_text_parts.append(f"Data de nascimento: {extracted_data['date_of_birth']}")
+
+            # Add address information
+            address = extracted_data.get('address', {})
+            if address.get('street') or address.get('city'):
+                address_parts = []
+                if address.get('street'):
+                    address_parts.append(address['street'])
+                if address.get('city'):
+                    address_parts.append(address['city'])
+                if address.get('state'):
+                    address_parts.append(address['state'])
+                if address_parts:
+                    client_text_parts.append(f"Endereço: {', '.join(address_parts)}")
+
+            # Add notes if available
+            if extracted_data.get('notes'):
+                client_text_parts.append(f"Informações adicionais: {extracted_data['notes']}")
+
+            # Combine all information into a single text for embedding
+            client_text = ". ".join(client_text_parts)
+
+            if not client_text.strip():
+                logger.warning("No client information available for embedding generation")
+                return None
+
+            # Generate embedding using AI service
+            embedding = self.ai_service.generate_embedding(client_text)
+
+            if embedding:
+                logger.info(f"Generated embedding for client: {extracted_data.get('name', 'Unknown')}")
+                return embedding
+            else:
+                logger.warning("Failed to generate embedding for client data")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error generating client embedding: {str(e)}")
+            return None
+
     def _extract_text(self, file_path: str, file_extension: str) -> str:
         """
         Extract text from various file formats.
@@ -87,6 +177,58 @@ class DocumentParserService:
 
         except Exception as e:
             logger.error(f"Error extracting text from {file_path}: {str(e)}")
+            raise
+
+    def _extract_text_from_bytes(self, file_content: bytes, file_extension: str, filename: str) -> str:
+        """
+        Extract text from file content in bytes. Creates temporary file only when necessary.
+
+        Args:
+            file_content: File content as bytes
+            file_extension: File extension (e.g., '.pdf', '.docx')
+            filename: Original filename for temporary file creation
+
+        Returns:
+            Extracted text content
+        """
+        try:
+            # For text-based files, work directly in memory
+            if file_extension in ['.md', '.txt', '.csv']:
+                if file_extension == '.csv':
+                    return self._extract_csv_text_from_bytes(file_content)
+                elif file_extension == '.md':
+                    return self._extract_markdown_text_from_bytes(file_content)
+                elif file_extension == '.txt':
+                    return self._extract_plain_text_from_bytes(file_content)
+
+            # For binary files (PDF, DOCX, images, Excel), create temporary file
+            else:
+                # Create temporary file only when necessary
+                import tempfile
+                import os
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+                    temp_file.write(file_content)
+                    temp_file_path = temp_file.name
+
+                try:
+                    if file_extension == '.pdf':
+                        return self._extract_pdf_text(temp_file_path)
+                    elif file_extension == '.docx':
+                        return self._extract_docx_text(temp_file_path)
+                    elif file_extension in ['.png', '.jpg', '.jpeg', '.tiff', '.bmp']:
+                        return self._extract_image_text(temp_file_path)
+                    elif file_extension in ['.xlsx', '.xls']:
+                        return self._extract_excel_text(temp_file_path)
+                    else:
+                        raise ValueError(f"Unsupported file type: {file_extension}")
+                finally:
+                    # Clean up temporary file
+                    if os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+
+        except Exception as e:
+            logger.error(f"Error extracting text from bytes for {filename}: {str(e)}")
             raise
 
     def _extract_pdf_text(self, file_path: str) -> str:
@@ -204,6 +346,59 @@ class DocumentParserService:
                 return file.read().strip()
         except Exception as e:
             logger.error(f"Plain text parsing failed: {str(e)}")
+            return ""
+
+    def _extract_csv_text_from_bytes(self, file_content: bytes) -> str:
+        """Extract text from CSV file content in bytes."""
+        try:
+            import io
+            # Decode bytes to string
+            content_str = file_content.decode('utf-8')
+            # Create StringIO for pandas
+            string_io = io.StringIO(content_str)
+            df = pd.read_csv(string_io)
+
+            # Convert to readable text format
+            text = f"CSV Data with {len(df)} rows and {len(df.columns)} columns:\n"
+            text += "Columns: " + ", ".join(df.columns.tolist()) + "\n\n"
+
+            # Add first few rows as examples
+            text += "Sample data:\n"
+            text += df.head(10).to_string(index=False)
+
+            return text
+        except Exception as e:
+            logger.error(f"CSV parsing from bytes failed: {str(e)}")
+            return ""
+
+    def _extract_markdown_text_from_bytes(self, file_content: bytes) -> str:
+        """Extract text from Markdown file content in bytes."""
+        try:
+            # Decode bytes to string
+            content = file_content.decode('utf-8')
+
+            # Remove markdown formatting for cleaner text
+            # Remove headers
+            content = re.sub(r'^#{1,6}\s+.*$', '', content, flags=re.MULTILINE)
+            # Remove links
+            content = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', content)
+            # Remove emphasis
+            content = re.sub(r'\*\*([^\*]+)\*\*', r'\1', content)
+            content = re.sub(r'\*([^\*]+)\*', r'\1', content)
+            content = re.sub(r'_([^_]+)_', r'\1', content)
+
+            return content.strip()
+        except Exception as e:
+            logger.error(f"Markdown parsing from bytes failed: {str(e)}")
+            return ""
+
+    def _extract_plain_text_from_bytes(self, file_content: bytes) -> str:
+        """Extract text from plain text file content in bytes."""
+        try:
+            # Decode bytes to string
+            return file_content.decode('utf-8').strip()
+        except Exception as e:
+            logger.error(f"Plain text parsing from bytes failed: {str(e)}")
             return ""
 
     def _extract_client_data_with_ai(self, text_content: str, filename: str, extraction_prompt: Optional[str] = None) -> Dict[str, Any]:

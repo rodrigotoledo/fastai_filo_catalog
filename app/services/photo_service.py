@@ -51,6 +51,7 @@ class PhotoService:
             file_path=str(file_path),
             file_size=len(content),
             content_type=file.content_type,
+            image_data=content,  # Save image bytes for CLIP processing
             user_description=user_description or "Foto sem descrição"
         )
 
@@ -70,15 +71,15 @@ class PhotoService:
             # Update photo with description
             photo.description = rich_description
 
-            # 2. Generate Embedding for the description
+            # 2. Generate Embedding for the description using CLIP (OpenAI)
             # We combine user_description + rich_description for better semantic coverage
             full_text_context = f"{user_description or ''} {rich_description}"
-            logger.info(f"Generating text embedding for {unique_filename}...")
-            embedding = ai_service.generate_embedding(full_text_context)
+            logger.info(f"Generating CLIP text embedding for {unique_filename}...")
+            embedding = ai_service.generate_clip_text_embedding(full_text_context)
 
-            # 3. Generate Image Embedding using CLIP
-            logger.info(f"Generating image embedding for {unique_filename}...")
-            image_embedding = ai_service.generate_image_embedding(str(file_path))
+            # 3. Generate Image Embedding using OpenAI CLIP
+            logger.info(f"Generating CLIP image embedding for {unique_filename}...")
+            image_embedding = ai_service.generate_clip_image_embedding(content)
 
             if embedding:
                 photo.embedding = embedding
@@ -546,7 +547,7 @@ class PhotoService:
 
         photos_query = query.offset(offset).limit(page_size).all()
         total_photos = query.count()
-        total_pages = (total_photos + page_size - 1) // page_size
+        total_found = (total_photos + page_size - 1) // page_size
 
         # Converter objetos Photo para dicionários serializáveis
         photos_data = []
@@ -565,12 +566,11 @@ class PhotoService:
             })
 
         return {
-            "photos": photos_data,
+            "results": photos_data,
             "total": total_photos,
             "page": page,
             "page_size": page_size,
-            "total_pages": total_pages,
-            "has_next": page < total_pages,
-            "has_prev": page > 1,
-            "processed_only": processed_only
+            "total_found": total_found,
+            "has_next": page < total_found,
+            "has_prev": page > 1
         }

@@ -252,6 +252,46 @@ class AIService:
             logger.error(f"Error generating embedding: {e}. Using fallback.")
             return [0.0] * 512
 
+    def generate_clip_text_embedding(self, text: str) -> List[float]:
+      """Usa o MESMO modelo CLIP para texto (agora sim é compatível com a imagem)"""
+      if not self.clip_model or not self.clip_processor:
+          return [0.0] * 512
+
+      try:
+          inputs = self.clip_processor(text=text, return_tensors="pt", padding=True, truncation=True)
+          with torch.no_grad():
+              outputs = self.clip_model.get_text_features(**inputs)
+          embedding = outputs.squeeze().tolist()
+          return embedding
+      except Exception as e:
+          logger.error(f"Erro no CLIP text embedding: {e}")
+          return [0.0] * 512
+
+    def generate_clip_image_embedding(self, image_bytes: bytes) -> List[float]:
+        """Generate embedding vector for image using local CLIP model"""
+        if not self.clip_model or not self.clip_processor:
+            logger.warning("CLIP model not initialized. Returning zero vector as fallback.")
+            return [0.0] * 512
+
+        try:
+            from PIL import Image
+            import io
+
+            # Convert bytes to PIL Image
+            image = Image.open(io.BytesIO(image_bytes))
+
+            # Process image with CLIP
+            inputs = self.clip_processor(images=image, return_tensors="pt")
+            with torch.no_grad():
+                outputs = self.clip_model.get_image_features(**inputs)
+
+            embedding = outputs.squeeze().tolist()
+            # CLIP embeddings are 512 dimensions, perfect match for pgvector schema
+            return embedding
+        except Exception as e:
+            logger.error(f"Error generating CLIP image embedding: {e}. Using fallback.")
+            return [0.0] * 512
+
 
     # ===================================================================
     # 2. EXTRAÇÃO DE DADOS DO DOCUMENTO (COM OCR + LANGCHAIN)
