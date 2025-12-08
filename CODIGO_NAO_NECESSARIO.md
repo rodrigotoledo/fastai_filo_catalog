@@ -385,3 +385,126 @@ O código tem funcionalidades importantes mas também contém:
 - Um endpoint muito específico que pode ser questionável
 
 A limpeza proposta manteria todas as funcionalidades essenciais enquanto reduziria significativamente a complexidade e o tamanho do código.
+
+---
+
+## Análise: Código Não Necessário em Photos
+
+### Resumo Executivo - Photos
+
+O arquivo `app/api/photos.py` contém **182 linhas de código** com funcionalidades de upload, busca por texto/imagem, listagem paginada e migração. Após análise, identificamos **código duplicado, endpoints de desenvolvimento e lógica complexa desnecessária**.
+
+**Problemas Identificados:**
+
+- 🔄 **Métodos duplicados** no PhotoService (get_photo aparece 3x, populate_photo 2x)
+- 🧪 **Endpoint de migração** (`/migrate-embeddings`) - usado uma vez apenas
+- 📝 **Lógica complexa de fallback** no populate_photo (múltiplas tentativas desnecessárias)
+- 🔍 **Busca duplicada** - endpoints `/search` e `/search/image` fazem queries similares
+- 📊 **Método get_processing_stats** - usado apenas para debug/monitoramento
+
+**Melhorias Sugeridas:**
+
+- 🗑️ **Remover endpoint `/migrate-embeddings`** - executar via script uma vez
+- 🔄 **Consolidar métodos duplicados** no PhotoService
+- 🚀 **Simplificar populate_photo** - reduzir fallbacks complexos
+- 📈 **Remover get_processing_stats** - mover para endpoint separado se necessário
+
+## 1. Endpoint `/migrate-embeddings` - Não Necessário em Produção
+
+**Localização:** Linhas 165-182
+
+**Problema:** Endpoint para migrar embeddings de fotos antigas. Deve ser executado apenas uma vez durante deploy.
+
+**Solução Sugerida:**
+
+```python
+# REMOVER INTEIRO - executar via script de migração
+@router.post("/migrate-embeddings")
+def migrate_old_photos(db: Session = Depends(get_db)):
+    # ... código de migração
+```
+
+**Razão:** Migrações devem ser feitas via scripts/database migrations, não via API endpoints.
+
+## 2. Métodos Duplicados no PhotoService
+
+**Localização:** Múltiplas definições de `get_photo` e `populate_photo`
+
+**Problema:** Mesmo método definido múltiplas vezes no arquivo (linhas 317, 495, 529 para get_photo).
+
+**Código Duplicado:**
+```python
+def get_photo(self, photo_id: int) -> Photo:  # linha 317
+def get_photo(self, photo_id: int):           # linha 495 (sem type hint)
+def get_photo(self, photo_id: int) -> Photo:  # linha 529
+```
+
+**Solução Sugerida:** Manter apenas uma implementação com type hints completos.
+
+## 3. Lógica Excessiva no `populate_photo`
+
+**Localização:** Linhas 100-300+
+
+**Problema:** Método `populate_photo` tem lógica muito complexa de fallback com múltiplas tentativas de download.
+
+**Problemas Específicos:**
+
+- Múltiplas tentativas de fallback (até 5 termos diferentes)
+- Código duplicado para fallbacks
+- Lógica de sanitização excessiva para termos bloqueados
+
+**Solução Sugerida:** Simplificar para 1-2 tentativas básicas, remover termos bloqueados desnecessários.
+
+## 4. Método `get_processing_stats` - Debug/Monitoramento
+
+**Localização:** Linhas 323-375
+
+**Problema:** Método retorna estatísticas detalhadas de processamento, usado apenas para monitoramento.
+
+**Solução Sugerida:** Se necessário, criar endpoint separado `/stats` ou remover completamente.
+
+## 5. Busca por Imagem Duplicada
+
+**Localização:** Endpoint `/search/image` (linhas 110-140)
+
+**Problema:** Faz praticamente a mesma query SQL do `/search`, apenas muda a origem do embedding.
+
+**Código Duplicado:**
+
+```python
+sql = text("""
+    SELECT id, original_filename, user_description,
+           image_embedding <=> :vec AS distance
+    FROM photos
+    WHERE image_embedding IS NOT NULL
+    ORDER BY distance
+    LIMIT :limit
+""")
+```
+
+**Solução Sugerida:** Consolidar em um único método de busca que aceite embedding como parâmetro.
+
+## 6. Arquivos de Teste e Utilitários Desnecessários
+
+**Arquivos Identificados:**
+
+- `test_visual_search.py` - teste específico pode ser integrado
+- `populate_embeddings.py` - script de população pode ser removido após uso
+- `monitor_performance.py` - utilitário de monitoramento
+- `monitor_progress.sh` - script de monitoramento
+- Múltiplos arquivos `test_*.py` - podem ser consolidados
+
+**Solução Sugerida:** Manter apenas testes essenciais, remover scripts temporários.
+
+### Estimativa de Redução - Photos
+
+- **Linhas atuais:** 182 (API) + 577 (Service) = ~759 linhas
+- **Linhas após limpeza:** ~150 (API) + ~400 (Service) = ~550 linhas
+- **Redução estimada:** ~200 linhas (~27%)
+
+## Benefícios da Limpeza
+
+- 🧹 **Código mais limpo** - remoção de duplicatas
+- 🚀 **Performance melhorada** - menos código para executar
+- 🛡️ **Manutenibilidade** - código mais fácil de entender
+- 📦 **Deploy mais simples** - menos endpoints/scripts desnecessários

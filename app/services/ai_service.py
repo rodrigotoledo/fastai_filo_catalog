@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 import base64
 import mimetypes
 import torch
+from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 
 load_dotenv()
@@ -216,7 +217,7 @@ class AIService:
             return [0.0] * 512
 
         try:
-            from PIL import Image
+
             image = Image.open(image_path)
             inputs = self.clip_processor(images=image, return_tensors="pt")
             with torch.no_grad():
@@ -274,7 +275,6 @@ class AIService:
             return [0.0] * 512
 
         try:
-            from PIL import Image
             import io
 
             # Convert bytes to PIL Image
@@ -317,7 +317,6 @@ class AIService:
         """Extrai texto da imagem usando pytesseract (OCR)"""
         try:
             import pytesseract
-            from PIL import Image
             import cv2
             import numpy as np
 

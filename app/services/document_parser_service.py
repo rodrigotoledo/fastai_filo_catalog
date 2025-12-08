@@ -80,68 +80,31 @@ class DocumentParserService:
         return self._extract_client_data_with_ai(text_content, filename, extraction_prompt)
 
     def generate_client_embedding(self, extracted_data: Dict[str, Any]) -> Optional[List[float]]:
-        """
-        Generate embedding vector for client data to enable semantic search.
-
-        Args:
-            extracted_data: Dictionary with extracted client information
-
-        Returns:
-            512-dimensional embedding vector or None if generation fails
-        """
         try:
-            # Create a comprehensive text representation of the client
+            # Monta texto rico do cliente
             client_text_parts = []
-
             if extracted_data.get('name'):
-                client_text_parts.append(f"Nome: {extracted_data['name']}")
-
-            if extracted_data.get('email'):
-                client_text_parts.append(f"Email: {extracted_data['email']}")
-
+                client_text_parts.append(extracted_data['name'])
             if extracted_data.get('cpf'):
-                client_text_parts.append(f"CPF: {extracted_data['cpf']}")
-
+                client_text_parts.append(f"CPF {extracted_data['cpf']}")
+            if extracted_data.get('email'):
+                client_text_parts.append(extracted_data['email'])
             if extracted_data.get('phone'):
-                client_text_parts.append(f"Telefone: {extracted_data['phone']}")
+                client_text_parts.append(extracted_data['phone'])
 
-            if extracted_data.get('date_of_birth'):
-                client_text_parts.append(f"Data de nascimento: {extracted_data['date_of_birth']}")
-
-            # Add address information
             address = extracted_data.get('address', {})
-            if address.get('street') or address.get('city'):
-                address_parts = []
-                if address.get('street'):
-                    address_parts.append(address['street'])
-                if address.get('city'):
-                    address_parts.append(address['city'])
-                if address.get('state'):
-                    address_parts.append(address['state'])
-                if address_parts:
-                    client_text_parts.append(f"Endereço: {', '.join(address_parts)}")
+            addr_parts = [address.get(k) for k in ['street', 'city', 'state'] if address.get(k)]
+            if addr_parts:
+                client_text_parts.append("Endereço: " + ", ".join(addr_parts))
 
-            # Add notes if available
-            if extracted_data.get('notes'):
-                client_text_parts.append(f"Informações adicionais: {extracted_data['notes']}")
-
-            # Combine all information into a single text for embedding
             client_text = ". ".join(client_text_parts)
-
             if not client_text.strip():
-                logger.warning("No client information available for embedding generation")
                 return None
 
-            # Generate embedding using AI service
-            embedding = self.ai_service.generate_embedding(client_text)
-
-            if embedding:
-                logger.info(f"Generated embedding for client: {extracted_data.get('name', 'Unknown')}")
-                return embedding
-            else:
-                logger.warning("Failed to generate embedding for client data")
-                return None
-
+            # AQUI É O PULO DO GATO:
+            # MUDANÇA CRÍTICA
+            embedding = self.ai_service.generate_clip_text_embedding(client_text)
+            return embedding
         except Exception as e:
             logger.error(f"Error generating client embedding: {str(e)}")
             return None

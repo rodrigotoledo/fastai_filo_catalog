@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from typing import List, Optional, Dict
 from app.models.client import Client, ClientAddress
 from app.schemas.client import (
@@ -455,53 +455,55 @@ class ClientService:
         return self._client_to_response(client)
 
     def search_similar_clients(self, query: str, limit: int = 10) -> List[Dict]:
-        """
-        Busca clientes usando similaridade semântica vetorial.
-        Usa AIService para gerar embeddings da query e busca no PostgreSQL com pgvector.
+      """Busca clientes por similaridade semântica PURA (só embedding CLIP)"""
+      try:
+          # 1. Gera embedding CLIP do texto
+          query_embedding = self.ai_service.generate_clip_text_embedding(query)
+          if not query_embedding or len(query_embedding) != 512:
+              logger.warning("Embedding inválido gerado")
+              return []
 
-        Args:
-            query: Texto da busca (ex: "cliente de São Paulo com email gmail")
-            limit: Número máximo de resultados
+          # 2. Query correta (sem SELECT duplicado + vetor como lista)
+          sql = text("""
+              SELECT
+                  id, name, email, cpf, phone,
+                  embedding <=> :query_vec AS distance
+              FROM clients
+              WHERE embedding IS NOT NULL
+                AND is_active = true
+              ORDER BY embedding <=> :query_vec
+              LIMIT :limit
+          """)
 
-        Returns:
-            Lista de dicionários com 'client_id', 'similarity' e 'client_data'
-        """
-        try:
-            # Gerar embedding da query
-            query_embedding = self.ai_service.generate_embedding(query)
-            if not query_embedding:
-                logger.warning("Não foi possível gerar embedding para a query")
-                return []
+          results = self.db.execute(sql, {
+              "query_vec": f"[{','.join(map(str, query_embedding))}]",  # ← STRING no formato pgvector
+              "limit": limit
+          }).fetchall()
 
-            # Buscar clientes similares no PostgreSQL usando pgvector
-            from sqlalchemy import func
+          similar_clients = []
+          for row in results:
+              similarity = round((1 - row.distance) * 100, 2)
 
-            results = self.db.query(
-                Client,
-                Client.embedding.cosine_distance(query_embedding).label('distance')
-            ).filter(
-                Client.embedding.isnot(None),  # Apenas clientes com embedding
-                Client.is_active == True  # Apenas clientes ativos
-            ).order_by(
-                Client.embedding.cosine_distance(query_embedding)
-            ).limit(limit).all()
+              # Ajuste esse threshold conforme seus testes (20~35 costuma ser bom)
+              if similarity < 15:
+                  continue
 
-            # Formatar resultados
-            similar_clients = []
-            for client, distance in results:
-                similarity = 1 - distance  # Converter distância para similaridade (0-1)
+              client = self.get_client(row.id)  # já carrega addresses
+              if client:
+                  similar_clients.append({
+                      "client_id": row.id,
+                      "name": row.name or "Sem nome",
+                      "email": row.email,
+                      "cpf": row.cpf,
+                      "similarity_score": similarity,
+                      "client_data": client
+                  })
 
-                # Apenas incluir resultados com similaridade mínima
-                if similarity >= 0.3:  # Threshold ajustável
-                    similar_clients.append({
-                        'client_id': client.id,
-                        'similarity': round(float(similarity), 3),
-                        'client_data': self._client_to_response(client)
-                    })
+          logger.info(f"Busca: '{query}' → {len(similar_clients)} resultados (threshold 25%)")
+          return similar_clients
 
-            logger.info(f"Encontrados {len(similar_clients)} clientes similares para query: {query[:50]}...")
-            return similar_clients
-
-        except Exception as e:
-            logger.error(f"Erro na busca vetorial de clientes: {str(e)}")
-            return []
+      except Exception as e:
+          logger.error(f"Erro fatal na busca semântica: {e}")
+          import traceback
+          traceback.print_exc()
+          return []
