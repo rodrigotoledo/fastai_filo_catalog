@@ -2,7 +2,7 @@
 import os
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from fastapi import UploadFile
 from dotenv import load_dotenv
 import json
@@ -407,6 +407,53 @@ class AIService:
             "note": "Falha na extração OCR - usar dados manuais",
             "raw_text": ""
         }
+
+    def process_text_with_custom_prompt(self, text_content: str, custom_prompt: str) -> Dict[str, Any]:
+        """
+        Processa texto usando LangChain com um prompt customizado.
+        Retorna dados estruturados extraídos do texto.
+        """
+        if not self.llm:
+            logger.warning("LangChain não disponível, retornando dados vazios")
+            return self._get_empty_document_data()
+
+        try:
+            # Usar LangChain para processar com prompt customizado
+            prompt = PromptTemplate(
+                template=custom_prompt,
+                input_variables=["text_content"]
+            )
+
+            chain = prompt | self.llm
+            result = chain.invoke({"text_content": text_content[:4000]})  # Limitar tamanho do texto
+
+            # Extrair o conteúdo do objeto AIMessage
+            result_text = result.content if hasattr(result, 'content') else str(result)
+
+            # Limpar possíveis markdown ou texto extra
+            if result_text.startswith("```json"):
+                result_text = result_text[7:]
+            if result_text.endswith("```"):
+                result_text = result_text[:-3]
+
+            result_text = result_text.strip()
+
+            try:
+                # Tentar fazer parse como JSON
+                data = json.loads(result_text)
+                return data
+
+            except json.JSONDecodeError:
+                # Se não for JSON, retornar como texto simples
+                logger.warning(f"Resposta não é JSON válido: {result_text[:200]}")
+                return {
+                    "raw_response": result_text,
+                    "error": "Resposta não está em formato JSON esperado"
+                }
+
+        except Exception as e:
+            logger.error(f"Erro no processamento customizado: {str(e)}")
+            return self._get_empty_document_data()
 
     # ===================================================================
     # 5. BUSCA NO FILE SEARCH STORE (stub - não disponível na versão atual)

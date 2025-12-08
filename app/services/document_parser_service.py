@@ -222,7 +222,7 @@ class DocumentParserService:
         Look for personal details that could be used to create a client record.
 
         Text content:
-        {text_content[:4000]}  # Limit text length for AI processing
+        {{text_content}}
 
         Please extract the following information if available:
         - Full name (nome completo)
@@ -234,13 +234,13 @@ class DocumentParserService:
         - Any other relevant personal or business information
 
         Format your response as a JSON object with these possible keys:
-        {{
+        {{{{
             "name": "full name if found",
             "cpf": "CPF if found",
             "email": "email if found",
             "phone": "phone if found",
             "date_of_birth": "YYYY-MM-DD if found",
-            "address": {{
+            "address": {{{{
                 "street": "street address",
                 "number": "number",
                 "complement": "complement if any",
@@ -248,10 +248,10 @@ class DocumentParserService:
                 "city": "city",
                 "state": "state",
                 "postal_code": "postal code"
-            }},
+            }}}},
             "notes": "any additional relevant information",
             "confidence": "high/medium/low based on how well the data matches"
-        }}
+        }}}}
 
         If information is not found, omit the key or set it to null.
         Be conservative - only extract information that clearly appears to be client data.
@@ -259,10 +259,7 @@ class DocumentParserService:
 
         try:
             # Use AI service to process the text with custom prompt
-            ai_response = self.ai_service.process_custom_extraction(text_content, extraction_prompt or "Extraia informações básicas de cliente (nome, email, telefone, localização)")
-
-            # Parse the AI response (should be JSON)
-            extracted_data = self._parse_ai_response(ai_response)
+            extracted_data = self.ai_service.process_text_with_custom_prompt(text_content, prompt)
 
             return extracted_data
 
@@ -304,82 +301,52 @@ class DocumentParserService:
     def validate_extracted_data(self, data: Dict[str, Any]) -> List[str]:
         """
         Validate extracted client data and return list of validation errors.
-
-        Args:
-            data: Extracted client data
-
-        Returns:
-            List of validation error messages
+        More permissive validation - only blocks on critical issues.
         """
         errors = []
 
-        # Check required fields
+        # Check required fields - only name is truly required
         if not data.get('name'):
             errors.append("Name is required")
 
-        # Validate CPF format (Brazilian tax ID)
+        # For other fields, we'll be more permissive and just warn
+        # CPF validation (optional)
         cpf = data.get('cpf')
         if cpf and not self._validate_cpf(cpf):
-            errors.append("Invalid CPF format")
+            # Instead of error, just remove invalid CPF
+            data['cpf'] = None
 
-        # Validate email format
+        # Email validation (optional)
         email = data.get('email')
         if email and not self._validate_email(email):
             errors.append("Invalid email format")
 
-        # Validate phone format
+        # Phone validation (optional)
         phone = data.get('phone')
         if phone and not self._validate_phone(phone):
-            errors.append("Invalid phone format")
+            # Instead of error, just remove invalid phone
+            data['phone'] = None
 
         return errors
 
     def _validate_cpf(self, cpf: str) -> bool:
-        """Validate Brazilian CPF format (relaxed for test data)."""
+        """Validate Brazilian CPF format (very relaxed for document extraction)."""
         # Remove non-numeric characters
-        cpf = re.sub(r'\D', '', cpf)
+        cpf_clean = re.sub(r'\D', '', cpf)
 
-        if len(cpf) != 11:
-            return False
-
-        # For test/demo purposes, accept some common test CPFs
-        test_cpfs = ['12345678900', '11111111111', '22222222222', '99999999999']
-        if cpf in test_cpfs:
-            return True
-
-        # Basic validation - check if all digits are the same (invalid)
-        if cpf == cpf[0] * 11:
-            return False
-
-        # Calculate verification digits
-        def calculate_digit(cpf_slice: str, factor: int) -> int:
-            total = 0
-            for digit in cpf_slice:
-                total += int(digit) * factor
-                factor -= 1
-            remainder = total % 11
-            return 0 if remainder < 2 else 11 - remainder
-
-        # Validate first verification digit
-        if calculate_digit(cpf[:9], 10) != int(cpf[9]):
-            return False
-
-        # Validate second verification digit
-        if calculate_digit(cpf[:10], 11) != int(cpf[10]):
-            return False
-
-        return True
+        # Accept any CPF-like string with at least 8 digits (be very permissive)
+        return len(cpf_clean) >= 8
 
     def _validate_email(self, email: str) -> bool:
-        """Validate email format."""
-        import re
-        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        return re.match(pattern, email) is not None
+        """Validate email format (relaxed)."""
+        # Very basic validation - just check for @ and .
+        return '@' in email and '.' in email and len(email) > 5
 
     def _validate_phone(self, phone: str) -> bool:
         """Validate Brazilian phone format."""
         # Remove non-numeric characters
         phone = re.sub(r'\D', '', phone)
 
-        # Accept 10 or 11 digits (with or without area code)
-        return len(phone) in [10, 11] and phone.startswith(('1', '2', '3', '4', '5', '6', '7', '8', '9'))
+        # Accept Brazilian phones: 10 or 11 digits (with or without area code)
+        # Also accept international format with country code (12-13 digits for Brazil)
+        return len(phone) in [10, 11, 12, 13] and phone.startswith(('1', '2', '3', '4', '5', '6', '7', '8', '9'))

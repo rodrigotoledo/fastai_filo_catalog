@@ -206,19 +206,13 @@ async def upload_document(
             try:
                 client_service = ClientService(db)
 
-                # Preparar dados para criação do cliente
-                # Gerar email temporário se não houver email mas houver CPF ou nome
+                # Sempre gerar email se não houver um válido
                 email = extracted_data.get('email')
                 if not email:
-                    if extracted_data.get('cpf'):
-                        # Usar CPF para gerar email único
-                        cpf_clean = extracted_data['cpf'].replace('.', '').replace('-', '')
-                        email = f"cpf{cpf_clean}@temp.document"
-                    elif extracted_data.get('name'):
-                        # Usar nome para gerar email único
-                        name_clean = extracted_data['name'].lower().replace(' ', '.').replace('ç', 'c').replace('ã', 'a').replace('õ', 'o')
-                        name_clean = ''.join(c for c in name_clean if c.isalnum() or c == '.')
-                        email = f"{name_clean}@temp.document"
+                    # Usar nome para gerar email único
+                    name_clean = extracted_data['name'].lower().replace(' ', '.').replace('ç', 'c').replace('ã', 'a').replace('õ', 'o')
+                    name_clean = ''.join(c for c in name_clean if c.isalnum() or c == '.')
+                    email = f"{name_clean}@temp.document"
 
                 client_data = ClientCreate(
                     name=extracted_data['name'],
