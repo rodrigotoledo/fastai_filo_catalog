@@ -60,11 +60,11 @@ class ClientResponse(ClientBase):
 
 # Paginated response
 class PaginatedClientsResponse(BaseModel):
-    clients: List[ClientResponse]
+    results: List[ClientResponse]
     total: int
     page: int
     page_size: int
-    total_pages: int
+    total_found: int
     has_next: bool
     has_prev: bool
 
@@ -79,7 +79,7 @@ class PaginatedSimilarClientsResponse(BaseModel):
     total: int
     page: int
     page_size: int
-    total_pages: int
+    total_found: int
     has_next: bool
     has_prev: bool
     query: Optional[str] = None

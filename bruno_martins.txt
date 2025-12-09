@@ -1,0 +1,7 @@
+Nome: Bruno Martins
+CPF: 987.654.321-00
+Email: bruno.martins@example.com
+Telefone: (21) 99876-4321
+Endereço: Av. Atlântica, 980
+Rio de Janeiro - RJ
+CEP: 22070-000

@@ -60,52 +60,49 @@ async def upload_photos(
 # ============================
 # BUSCA POR TEXTO (o que você vai usar 99% do tempo)
 # ============================
-@router.get("/search", response_model=PaginatedPhotosResponse)
+# ============================
+# BUSCA POR TEXTO – VERSÃO "SÓ FUNCIONA, SEM DRAMA"
+# ============================
+@router.get("/search", response_model=List[PhotoResponse])
 def search(
-    q: str = Query(..., description="O que você quer encontrar? Ex: vestido floral vermelho"),
-    limit: int = Query(12, ge=1, le=50),
+    q: str = Query(..., description="Ex: vestido vermelho floral, gato no sofá"),
+    limit: int = Query(60, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
+    # 1. Texto → embedding (só isso)
     query_vec = ai_service.generate_clip_text_embedding(q)
     if not query_vec:
-        raise HTTPException(500, "Erro ao gerar embedding do texto")
+        raise HTTPException(500, "Erro no modelo de texto")
 
+    vector_str = f"[{','.join(map(str, query_vec))}]"
+
+    # 2. Busca os mais próximos (exato e confiável)
     sql = text("""
-        SELECT id, original_filename, user_description, file_path,
-               image_embedding <=> :vec AS distance
+        SELECT id, image_embedding <=> :vec AS distance
         FROM photos
         WHERE image_embedding IS NOT NULL
-        ORDER BY distance
-        LIMIT :limit
+        ORDER BY image_embedding <=> :vec
+        LIMIT 300
     """)
 
-    rows = db.execute(
-        sql,
-        {"vec": f"[{','.join(map(str, query_vec))}]", "limit": limit}
-    ).fetchall()
+    rows = db.execute(sql, {"vec": vector_str}).fetchall()
 
+    # 3. Filtra e monta resposta (só o que presta)
     results = []
-    for r in rows:
-        confidence = round((1 - r.distance) * 100, 1)
-        if confidence >= 18:  # filtro de relevância
-            photo_service = PhotoService(db)
-            photo = photo_service.get_photo(r.id)
-            if photo:
-                photo_response = PhotoResponse.from_orm(photo)
-                photo_response.similarity_score = confidence
-                results.append(photo_response)
+    for row in rows:
+        confidence = round((1 - row.distance) * 100, 1)
+        if confidence < 18:
+            continue
 
-    return PaginatedPhotosResponse(
-        results=results,
-        total=len(results),
-        page=1,
-        page_size=limit,
-        total_found=len(results),  # para buscas, sempre 1 página
-        has_next=False,  # buscas não têm paginação
-        has_prev=False   # buscas não têm paginação
-    )
+        photo = PhotoService(db).get_photo(row.id)
+        if photo:
+            resp = PhotoResponse.from_orm(photo)
+            resp.similarity_score = confidence
+            results.append(resp)
+            if len(results) >= limit:
+                break
 
-
+    return results
 # ============================
 # BUSCA POR IMAGEM (reverse search)
 # ============================

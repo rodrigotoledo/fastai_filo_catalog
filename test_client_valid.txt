@@ -1,0 +1,7 @@
+Nome: João Silva
+CPF: 123.456.789-09
+Email: joao.silva@email.com
+Telefone: (11) 99999-9999
+Endereço: Rua das Flores, 123
+São Paulo - SP
+CEP: 01234-567

@@ -264,15 +264,15 @@ class ClientService:
         skip = (page - 1) * page_size
         clients = query.order_by(Client.created_at.desc()).offset(skip).limit(page_size).all()
 
-        total_pages = (total + page_size - 1) // page_size
+        total_found = (total + page_size - 1) // page_size
 
         return {
-            "clients": [self._client_to_response(client) for client in clients],
+            "results": [self._client_to_response(client) for client in clients],
             "total": total,
             "page": page,
             "page_size": page_size,
-            "total_pages": total_pages,
-            "has_next": page < total_pages,
+            "total_found": total_found,
+            "has_next": page < total_found,
             "has_prev": page > 1
         }
 
@@ -463,43 +463,43 @@ class ClientService:
               logger.warning("Embedding inválido gerado")
               return []
 
-          # 2. Query correta (sem SELECT duplicado + vetor como lista)
+          # 2. Query otimizada com threshold direto no SQL (evita buscar tudo e filtrar depois)
           sql = text("""
               SELECT
-                  id, name, email, cpf, phone,
+                  clients.*,
                   embedding <=> :query_vec AS distance
               FROM clients
               WHERE embedding IS NOT NULL
                 AND is_active = true
+                AND (1 - (embedding <=> :query_vec)) >= :threshold
               ORDER BY embedding <=> :query_vec
               LIMIT :limit
           """)
 
           results = self.db.execute(sql, {
               "query_vec": f"[{','.join(map(str, query_embedding))}]",  # ← STRING no formato pgvector
+              "threshold": 0.76,  # 76% de similaridade - equilíbrio final
               "limit": limit
           }).fetchall()
+
 
           similar_clients = []
           for row in results:
               similarity = round((1 - row.distance) * 100, 2)
 
-              # Ajuste esse threshold conforme seus testes (20~35 costuma ser bom)
-              if similarity < 15:
+              client = self.get_client(row.id)
+              if not client:
                   continue
 
-              client = self.get_client(row.id)  # já carrega addresses
-              if client:
-                  similar_clients.append({
-                      "client_id": row.id,
-                      "name": row.name or "Sem nome",
-                      "email": row.email,
-                      "cpf": row.cpf,
-                      "similarity_score": similarity,
-                      "client_data": client
-                  })
+              # AQUI É A MAGIA QUE VOCÊ QUERIA DESDE O INÍCIO:
+              similar_clients.append({
+                  **row._asdict(),           # pega TUDO que veio do SQL (id, name, email, cpf, distance...)
+                  "documents": client.documents,
+                  "addresses": client.addresses,
+                  "similarity_score": similarity   # só adiciona o score
+              })
 
-          logger.info(f"Busca: '{query}' → {len(similar_clients)} resultados (threshold 25%)")
+          logger.info(f"Busca: '{query}' → {len(similar_clients)} resultados (threshold 78% aplicado no SQL)")
           return similar_clients
 
       except Exception as e:

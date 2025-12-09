@@ -3,6 +3,7 @@ import tempfile
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import logging
+from datetime import datetime
 
 # PDF parsing
 import PyPDF2
@@ -80,34 +81,89 @@ class DocumentParserService:
         return self._extract_client_data_with_ai(text_content, filename, extraction_prompt)
 
     def generate_client_embedding(self, extracted_data: Dict[str, Any]) -> Optional[List[float]]:
-        try:
-            # Monta texto rico do cliente
-            client_text_parts = []
-            if extracted_data.get('name'):
-                client_text_parts.append(extracted_data['name'])
-            if extracted_data.get('cpf'):
-                client_text_parts.append(f"CPF {extracted_data['cpf']}")
-            if extracted_data.get('email'):
-                client_text_parts.append(extracted_data['email'])
-            if extracted_data.get('phone'):
-                client_text_parts.append(extracted_data['phone'])
+      try:
+          parts = []
 
-            address = extracted_data.get('address', {})
-            addr_parts = [address.get(k) for k in ['street', 'city', 'state'] if address.get(k)]
-            if addr_parts:
-                client_text_parts.append("Endereço: " + ", ".join(addr_parts))
+          name = extracted_data.get('name')
+          cpf = extracted_data.get('cpf')
+          email = extracted_data.get('email')
+          phone = extracted_data.get('phone')
+          birth_date = extracted_data.get('date_of_birth')
 
-            client_text = ". ".join(client_text_parts)
-            if not client_text.strip():
-                return None
+          address = extracted_data.get('address', {})
+          street = address.get('street')
+          city = address.get('city')
+          state = address.get('state')
+          neighborhood = address.get('neighborhood')
 
-            # AQUI É O PULO DO GATO:
-            # MUDANÇA CRÍTICA
-            embedding = self.ai_service.generate_clip_text_embedding(client_text)
-            return embedding
-        except Exception as e:
-            logger.error(f"Error generating client embedding: {str(e)}")
-            return None
+          # FRASES NATURAIS — ISSO É O QUE O CLIP AMA
+          if name:
+              parts.append(f"person named {name}")
+              parts.append(f"client {name}")
+              parts.append(f"individual called {name}")
+
+          if cpf:
+              parts.append(f"Brazilian with CPF {cpf.replace('.', '').replace('-', '')}")  # opcional, mas ajuda
+              parts.append(f"document CPF {cpf}")
+
+          if email:
+              domain = email.split('@')[-1] if '@' in email else ''
+              parts.append(f"person with email {email}")
+              if 'gmail' in domain:
+                  parts.append("person using Gmail")
+              if 'hotmail' in domain:
+                  parts.append("person using Hotmail")
+
+          if phone:
+              parts.append(f"person with phone number {phone}")
+
+          if birth_date:
+              try:
+                  year = datetime.strptime(birth_date, "%Y-%m-%d").year
+                  decade = (year // 10) * 10
+                  parts.append(f"person born in {year}")
+                  parts.append(f"person born in the {decade}s")
+              except:
+                  pass
+
+          # Endereço — super importante para buscas locais
+          if city or state:
+              location = ", ".join(filter(None, [street, neighborhood, city, state]))
+              parts.append(f"person living in {location}")
+              parts.append(f"client from {city or state}")
+              parts.append(f"address in {state} state")
+              if city:
+                  parts.append(f"person located in {city}")
+
+          # Frases genéricas - SÓ ADICIONE SE TEM DADOS ESPECÍFICOS SUFICIENTES
+          has_specific_data = any([name, cpf, email, phone, birth_date, city, state])
+
+          if has_specific_data:
+              parts.extend([
+                  "Brazilian citizen",
+                  "customer document",
+                  "personal information document"
+              ])
+          else:
+              # Para documentos sem dados específicos (como currículos), seja mais específico
+              parts.extend([
+                  "professional resume document",
+                  "curriculum vitae",
+                  "work experience document"
+              ])
+
+          # A MÁGICA: juntar tudo em uma frase fluida e natural
+          client_text = ". ".join(parts)
+
+          # Debug temporário (tire depois)
+          logger.info(f"[EMBEDDING TEXT] {client_text[:500]}")
+
+          embedding = self.ai_service.generate_clip_text_embedding(client_text)
+          return embedding
+
+      except Exception as e:
+          logger.error(f"Error generating embedding: {e}")
+          return None
 
     def _extract_text(self, file_path: str, file_extension: str) -> str:
         """

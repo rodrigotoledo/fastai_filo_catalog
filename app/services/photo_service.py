@@ -495,37 +495,6 @@ class PhotoService:
     def get_photo(self, photo_id: int):
         return self.db.query(Photo).filter(Photo.id == photo_id).first()
 
-    def search_similar_photos(self, query_text: str = None, photo_id: int = None, limit: int = 12):
-        """
-        Busca fotos similares usando PGVector (via VectorService)
-        Returns list of dicts with 'photo_id' and 'similarity', matching ChromaDB format.
-        """
-        from app.services.vector_service import VectorService
-
-        vector_service = VectorService(self.db)
-
-        if query_text:
-            return vector_service.search_similar_photos(query_text, limit)
-
-        elif photo_id:
-            # Image-to-image search: find photos similar to the given photo
-            target_photo = self.get_photo(photo_id)
-            if not target_photo or not target_photo.image_embedding:
-                return []
-
-            # Search using the target photo's image embedding
-            results = vector_service.search_similar_photos_by_embedding(target_photo.image_embedding, limit)
-            return results
-
-    def search_similar_photos_by_embedding(self, embedding: List[float], limit: int = 12):
-        """
-        Search photos similar to a given embedding vector.
-        """
-        from app.services.vector_service import VectorService
-
-        vector_service = VectorService(self.db)
-        return vector_service.search_similar_photos_by_embedding(embedding, limit)
-
     def get_photo(self, photo_id: int) -> Photo:
         """
         Busca uma foto específica por ID
@@ -545,9 +514,9 @@ class PhotoService:
         if processed_only:
             query = query.filter(Photo.processed == True)
 
-        photos_query = query.offset(offset).limit(page_size).all()
+        photos_query = query.all()
         total_photos = query.count()
-        total_found = (total_photos + page_size - 1) // page_size
+        total_found = total_photos
 
         # Converter objetos Photo para dicionários serializáveis
         photos_data = []
@@ -569,8 +538,8 @@ class PhotoService:
             "results": photos_data,
             "total": total_photos,
             "page": page,
-            "page_size": page_size,
-            "total_found": total_found,
-            "has_next": page < total_found,
+            "page_size": total_photos,
+            "total_found": total_photos,
+            "has_next": False,
             "has_prev": page > 1
         }

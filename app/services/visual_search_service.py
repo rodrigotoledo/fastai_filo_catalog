@@ -644,9 +644,7 @@ class VisualSearchService:
 
         # Always skip re-ranking for very simple queries
         simple_indicators = [
-            len(query.split()) <= 1,  # Single words
             query.isdigit(),  # Numbers only
-            len(query) < 5,  # Very short queries
             query_lower in ['gato', 'cachorro', 'carro', 'casa', 'pessoa', 'comida', 'bebida', 'flor', 'árvore'],  # Common single nouns
             query_lower.startswith(('foto', 'imagem', 'picture', 'img')),  # Meta queries
         ]

@@ -112,7 +112,7 @@ def test_similarity_search():
 
         try:
             response = requests.get(
-                f"{BASE_URL}/api/v1/clients/search-similar",
+                f"{BASE_URL}/api/v1/clients/search",
                 params={'q': query, 'limit': 5},
                 timeout=10
             )

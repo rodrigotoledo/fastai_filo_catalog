@@ -81,20 +81,21 @@ def get_clients(
     client_service = ClientService(db)
     return client_service.get_clients(page=page, page_size=page_size, search=search)
 
-@router.get("/search-similar", response_model=List[dict])
-def search_similar_clients(
-    q: str = Query(..., description="Texto para busca semântica de clientes (ex: 'cliente de São Paulo com email gmail')", min_length=3),
-    limit: int = Query(10, description="Número máximo de resultados", ge=1, le=50),
+@router.get("/search", response_model=PaginatedClientsResponse)
+def search_clients(
+    q: str = Query(..., description="Texto para busca semântica de clientes (ex: 'cliente de São Paulo com email gmail')"),
+    limit: int = Query(2000, description="Número máximo de resultados", ge=1),
     db: Session = Depends(get_db)
 ):
     """
     Busca clientes usando similaridade semântica vetorial.
 
-    Esta endpoint permite encontrar clientes através de busca semântica,
+    Esta endpoint permite encontrar clientes através de busca semântica inteligente,
     não apenas busca textual tradicional. Por exemplo:
     - "cliente de São Paulo" - encontra clientes com endereço em SP
     - "pessoa com email gmail" - encontra clientes com emails @gmail.com
     - "cliente nascido em 1980" - encontra clientes nascidos nessa década
+    - "bruno" - encontra Bruno Martins e similares
 
     **Como funciona:**
     1. Gera embedding vetorial da query usando IA (CLIP)
@@ -107,8 +108,15 @@ def search_similar_clients(
     """
     client_service = ClientService(db)
     results = client_service.search_similar_clients(q, limit)
-
-    return results
+    return PaginatedClientsResponse(
+        results=results,
+        total=len(results),
+        page=1,
+        page_size=limit,
+        total_found=1,
+        has_next=False,
+        has_prev=False
+    )
 
 @router.get("/{client_id}", response_model=ClientResponse)
 def get_client(
