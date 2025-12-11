@@ -42,9 +42,9 @@ async def upload_photos(
         try:
             # 2. gera embedding CLIP direto dos bytes (sem tocar no disco de novo)
             content = await file.read()
-            embedding = ai_service.generate_clip_image_embedding(content)
+            embedding = ai_service.generate_clip_embedding(content)
 
-            photo.image_embedding = embedding
+            photo.embedding = embedding
             db.commit()
             logger.info(f"Embedding gerado e salvo para foto {photo.id}")
 
@@ -76,12 +76,14 @@ def search(
 
     vector_str = f"[{','.join(map(str, query_vec))}]"
 
+    MAX_DISTANCE = 0.90
+
     # 2. Busca os mais próximos (exato e confiável)
     sql = text("""
-        SELECT id, image_embedding <=> :vec AS distance
+        SELECT id, embedding <=> :vec AS distance
         FROM photos
-        WHERE image_embedding IS NOT NULL
-        ORDER BY image_embedding <=> :vec
+        WHERE embedding IS NOT NULL
+        ORDER BY embedding <=> :vec
         LIMIT 300
     """)
 
@@ -90,17 +92,16 @@ def search(
     # 3. Filtra e monta resposta (só o que presta)
     results = []
     for row in rows:
-        confidence = round((1 - row.distance) * 100, 1)
-        if confidence < 18:
-            continue
+        if row.distance <= MAX_DISTANCE:
+          confidence = round((1 - row.distance) * 100, 1)
 
-        photo = PhotoService(db).get_photo(row.id)
-        if photo:
-            resp = PhotoResponse.from_orm(photo)
-            resp.similarity_score = confidence
-            results.append(resp)
-            if len(results) >= limit:
-                break
+          photo = PhotoService(db).get_photo(row.id)
+          if photo:
+              resp = PhotoResponse.from_orm(photo)
+              resp.similarity_score = confidence
+              results.append(resp)
+              if len(results) >= limit:
+                  break
 
     return results
 # ============================
@@ -113,16 +114,16 @@ async def search_by_image(
     db: Session = Depends(get_db),
 ):
     content = await file.read()
-    query_vec = ai_service.generate_clip_image_embedding(content)
+    query_vec = ai_service.generate_clip_embedding(content)
     if not query_vec:
         raise HTTPException(500, "Erro ao gerar embedding da imagem enviada")
 
     # mesma query do /search, só muda a origem do vetor
     sql = text("""
         SELECT id, original_filename, user_description,
-               image_embedding <=> :vec AS distance
+               embedding <=> :vec AS distance
         FROM photos
-        WHERE image_embedding IS NOT NULL
+        WHERE embedding IS NOT NULL
         ORDER BY distance
         LIMIT :limit
     """)
@@ -164,13 +165,13 @@ def get_file(photo_id: int, db: Session = Depends(get_db)):
 # ============================
 @router.post("/migrate-embeddings")
 def migrate_old_photos(db: Session = Depends(get_db)):
-    photos = db.query(Photo).filter(Photo.image_embedding.is_(None)).all()
+    photos = db.query(Photo).filter(Photo.embedding.is_(None)).all()
     count = 0
     for p in photos:
         try:
             with open(p.file_path, "rb") as f:
-                emb = ai_service.generate_clip_image_embedding(f.read())
-            p.image_embedding = emb
+                emb = ai_service.generate_clip_embedding(f.read())
+            p.embedding = emb
             db.commit()
             count += 1
         except Exception as e:

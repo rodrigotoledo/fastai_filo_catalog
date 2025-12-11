@@ -185,12 +185,12 @@ class VisualSearchService:
         caption = self._generate_rich_caption(image_path, user_description)
 
         # Generate embeddings
-        image_embedding = np.array(self.clip_embeddings([image_path])[0])
+        embedding = np.array(self.clip_embeddings([image_path])[0])
         text_embedding = np.array(self.text_embeddings([caption])[0])
 
         # For now, use only CLIP embedding (512 dimensions) to match our database schema
         # TODO: Implement proper dimension alignment or use separate indices
-        combined_embedding = image_embedding.tolist()
+        combined_embedding = embedding.tolist()
 
         # Create unique document ID
         doc_id = str(uuid.uuid4())
@@ -206,7 +206,7 @@ class VisualSearchService:
             "created_at": str(uuid.uuid1().time),
             "caption": caption,
             # Store individual embeddings for potential future use
-            "image_embedding": str(image_embedding.tolist()),
+            "embedding": str(embedding.tolist()),
             "text_embedding": str(text_embedding.tolist())
         }
 
@@ -575,11 +575,11 @@ class VisualSearchService:
 
         try:
             # Generate embeddings for query image
-            image_embedding = np.array(self.clip_embeddings([query_image_path])[0])
+            embedding = np.array(self.clip_embeddings([query_image_path])[0])
 
             # For reverse image search, we weight the image embedding more heavily
             # since we're looking for visual similarity
-            adjusted_query = 0.8 * image_embedding + 0.2 * np.zeros_like(image_embedding)
+            adjusted_query = 0.8 * embedding + 0.2 * np.zeros_like(embedding)
             adjusted_query = adjusted_query.tolist()
 
             # Search in ChromaDB using combined embeddings

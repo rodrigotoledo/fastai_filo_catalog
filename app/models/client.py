@@ -35,8 +35,8 @@ class Client(SQLModel, table=True):
     is_active: bool = Field(default=True)
     processed: bool = Field(default=False)
 
-    # Embedding vetorial para busca semântica (512 dimensões - CLIP)
-    embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(512)))
+    # Embedding vetorial para busca semântica (1536 dimensões - OpenAI)
+    embedding: Optional[list[float]] = Field(default=None, sa_column=Column(Vector(1536)))
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

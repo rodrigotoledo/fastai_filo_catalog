@@ -182,20 +182,70 @@ class AIService:
         return None
 
     def _initialize_embeddings(self):
+        """Initialize embeddings based on AI_MODEL_TYPE configuration"""
+        try:
+            # Verificar qual modelo foi configurado
+            ai_model_type = os.getenv("AI_MODEL_TYPE", "gemini").lower().strip()
+
+            if ai_model_type == "openai":
+                return self._initialize_openai_embeddings()
+            elif ai_model_type == "gemini":
+                return self._initialize_gemini_embeddings()
+            elif ai_model_type == "local":
+                return self._initialize_local_embeddings()
+            else:
+                logger.warning(f"AI_MODEL_TYPE '{ai_model_type}' não suportado para embeddings. Usando Gemini como fallback.")
+                return self._initialize_gemini_embeddings()
+
+        except Exception as e:
+            logger.error(f"Failed to initialize embeddings: {e}")
+            return None
+
+    def _initialize_gemini_embeddings(self):
         """Initialize Google Gemini Embeddings"""
         try:
             api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
             if not api_key:
-                logger.warning("No API Key for embeddings. Vector search will vary.")
-                return None
+                raise ValueError("GOOGLE_API_KEY ou GEMINI_API_KEY não configurada")
 
-            # Using the specific embedding model for Gemini
             return GoogleGenerativeAIEmbeddings(
                 model="models/embedding-001",
                 google_api_key=api_key
             )
         except Exception as e:
-            logger.error(f"Failed to initialize embeddings: {e}")
+            logger.error(f"Erro ao inicializar Gemini embeddings: {str(e)}")
+            return None
+
+    def _initialize_openai_embeddings(self):
+        """Initialize OpenAI Embeddings"""
+        try:
+            from langchain_openai import OpenAIEmbeddings
+
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY não configurada")
+
+            return OpenAIEmbeddings(
+                model="text-embedding-3-small",  # 1536 dimensions
+                openai_api_key=api_key
+            )
+        except Exception as e:
+            logger.error(f"Erro ao inicializar OpenAI embeddings: {str(e)}")
+            return None
+
+    def _initialize_local_embeddings(self):
+        """Initialize local embeddings using sentence-transformers"""
+        try:
+            from langchain_huggingface import HuggingFaceEmbeddings
+
+            model_name = os.getenv("LOCAL_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+            return HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs={'device': 'cpu'},
+                encode_kwargs={'normalize_embeddings': True}
+            )
+        except Exception as e:
+            logger.error(f"Erro ao inicializar embeddings locais: {str(e)}")
             return None
 
     def _initialize_clip(self):
@@ -210,7 +260,7 @@ class AIService:
             logger.error(f"Failed to initialize CLIP: {e}")
             return None, None
 
-    def generate_image_embedding(self, image_path: str) -> List[float]:
+    def generate_embedding(self, image_path: str) -> List[float]:
         """Generate embedding vector for image using CLIP"""
         if not self.clip_model or not self.clip_processor:
             logger.warning("CLIP model not initialized. Returning zero vector as fallback.")
@@ -228,6 +278,45 @@ class AIService:
         except Exception as e:
             logger.error(f"Error generating image embedding: {e}")
             return [0.0] * 512
+
+
+    def generate_embedding_complex(self, text: str) -> List[float]:
+        """Generate embedding based on configured AI_MODEL_TYPE"""
+        if not self.embeddings:
+            # Fallback baseado no tipo configurado
+            ai_model_type = os.getenv("AI_MODEL_TYPE", "gemini").lower().strip()
+            if ai_model_type == "openai":
+                return [0.0] * 1536  # OpenAI text-embedding-3-small
+            elif ai_model_type == "local":
+                return [0.0] * 384   # sentence-transformers/all-MiniLM-L6-v2
+            else:
+                return [0.0] * 768   # Gemini default
+
+        try:
+            embedding = self.embeddings.embed_query(text)
+
+            # Log das dimensões para debug
+            ai_model_type = os.getenv("AI_MODEL_TYPE", "gemini").lower().strip()
+            expected_dims = {
+                "gemini": 768,
+                "openai": 1536,
+                "local": 384
+            }.get(ai_model_type, 768)
+
+            if len(embedding) != expected_dims:
+                logger.warning(f"Embedding size inesperado para {ai_model_type}: {len(embedding)}, esperado {expected_dims}")
+
+            return embedding
+        except Exception as e:
+            logger.error(f"Erro ao gerar embedding: {e}")
+            # Fallback com dimensões corretas
+            ai_model_type = os.getenv("AI_MODEL_TYPE", "gemini").lower().strip()
+            fallback_dims = {
+                "gemini": 768,
+                "openai": 1536,
+                "local": 384
+            }.get(ai_model_type, 768)
+            return [0.0] * fallback_dims
 
     def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding vector for text using Gemini"""
@@ -268,7 +357,7 @@ class AIService:
           logger.error(f"Erro no CLIP text embedding: {e}")
           return [0.0] * 512
 
-    def generate_clip_image_embedding(self, image_bytes: bytes) -> List[float]:
+    def generate_clip_embedding(self, image_bytes: bytes) -> List[float]:
         """Generate embedding vector for image using local CLIP model"""
         if not self.clip_model or not self.clip_processor:
             logger.warning("CLIP model not initialized. Returning zero vector as fallback.")
@@ -447,17 +536,115 @@ class AIService:
             "raw_text": ""
         }
 
-    def process_text_with_custom_prompt(self, text_content: str, custom_prompt: str) -> Dict[str, Any]:
+    def analyze_query_threshold(self, query: str) -> float:
         """
-        Processa texto usando LangChain com um prompt customizado.
-        Retorna dados estruturados extraídos do texto.
+        Usa IA para analisar uma query de busca e determinar o threshold ideal de similaridade.
+        Retorna um valor float entre 0.0 e 1.0.
         """
         if not self.llm:
-            logger.warning("LangChain não disponível, retornando dados vazios")
-            return self._get_empty_document_data()
+            logger.warning("LLM não disponível, usando threshold padrão")
+            return 0.35
 
         try:
-            # Usar LangChain para processar com prompt customizado
+            analysis_prompt = f"""
+            Eu sou um Agente especializado em procurar um ótimo threshold e baseado na pesquisa a seguir gostaria de um possível numero a usar que buscaria os melhores resultados:
+
+            Query: "{query}"
+
+            Analise esta query de busca e determine o threshold ideal de similaridade (0.0 a 1.0) para busca vetorial em um sistema de busca de clientes.
+
+            Considere:
+            - Queries específicas (nomes próprios, emails, CPFs, documentos): threshold mais alto (0.7-0.9)
+            - Queries descritivas gerais ("cliente de SP", "pessoa jovem", endereços): threshold médio (0.3-0.6)
+            - Queries muito genéricas ("cliente", "pessoa", uma palavra só): threshold baixo (0.1-0.3)
+
+            Retorne apenas um número decimal entre 0.0 e 1.0 representando o threshold recomendado.
+            Não inclua explicações, apenas o número.
+            """
+
+            # Usar LangChain para fazer a análise
+            prompt = PromptTemplate(
+                template=analysis_prompt,
+                input_variables=[]
+            )
+
+            chain = prompt | self.llm
+            result = chain.invoke({})
+
+            # Extrair o conteúdo da resposta
+            result_text = result.content if hasattr(result, 'content') else str(result)
+
+            # Extrair número da resposta
+            import re
+            threshold_match = re.search(r'(\d+\.?\d*)', result_text.strip())
+            if threshold_match:
+                threshold = float(threshold_match.group(1))
+                # Garantir que está entre 0.0 e 1.0
+                threshold = max(0.0, min(1.0, threshold))
+                logger.info(f"IA determinou threshold {threshold} para query: '{query}'")
+                return threshold
+
+        except Exception as e:
+            logger.warning(f"Erro ao consultar IA sobre threshold: {e}")
+
+        # Fallback para heurísticas se IA falhar
+        logger.info(f"Usando fallback de heurísticas para query: '{query}'")
+        return self._estimate_threshold_fallback(query)
+
+    def _estimate_threshold_fallback(self, query: str) -> float:
+        """
+        Método de fallback usando heurísticas quando a IA não está disponível
+        """
+        query_lower = query.lower().strip()
+        words = query.split()
+        word_count = len(words)
+
+        # 1. Queries muito específicas (alta precisão necessária)
+        specific_indicators = [
+            '@', '.com', '.org', '.net', 'gmail', 'hotmail', 'yahoo',  # emails
+            'cpf', 'rg', 'cnpj',  # documentos
+            'telefone', 'celular', 'fone',  # contatos
+            'rua', 'avenida', 'av.', 'alameda', 'travessa'  # endereços específicos
+        ]
+
+        if any(indicator in query_lower for indicator in specific_indicators):
+            return 0.75  # Threshold alto para queries específicas
+
+        # 2. Queries com nomes próprios (palavras capitalizadas)
+        capitalized_words = [w for w in words if w and w[0].isupper() and len(w) > 1]
+        if len(capitalized_words) >= 2:  # Provavelmente nome + sobrenome
+            return 0.65
+
+        # 3. Queries numéricas (datas, CEPs, etc.)
+        import re
+        if re.search(r'\d{4,}', query):  # Pelo menos 4 dígitos consecutivos
+            return 0.70
+
+        # 4. Queries curtas e diretas (1-2 palavras)
+        if word_count <= 2:
+            if word_count == 1:
+                return 0.20  # Muito genérico
+            else:
+                return 0.35  # Duas palavras, moderadamente específico
+
+        # 5. Queries descritivas (3+ palavras)
+        if word_count >= 5:
+            return 0.45  # Queries longas precisam de threshold mais alto
+
+        # 6. Queries com conectores lógicos
+        logical_indicators = [' e ', ' ou ', ' com ', ' de ', ' em ', ' para ', ' que ']
+        if any(indicator in query_lower for indicator in logical_indicators):
+            return 0.40
+
+        # 7. Default para queries médias
+        return 0.35
+
+    def process_text_with_custom_prompt(self, text_content: str, custom_prompt: str) -> Dict:
+        """
+        Processa texto usando um prompt customizado com LangChain
+        Retorna dados extraídos em formato de dicionário
+        """
+        try:
             prompt = PromptTemplate(
                 template=custom_prompt,
                 input_variables=["text_content"]

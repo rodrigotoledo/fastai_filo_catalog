@@ -118,6 +118,47 @@ def search_clients(
         has_prev=False
     )
 
+@router.put("/{client_id}/process", response_model=ClientResponse)
+def process_client(
+    client_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Processa cliente para gerar embedding vetorial
+    """
+    client_service = ClientService(db)
+    try:
+        return client_service.process_client(client_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
+@router.post("/process-all", response_model=dict)
+def process_all_clients(
+    limit: Optional[int] = Query(None, description="Limite de clientes a processar (opcional)", ge=1),
+    db: Session = Depends(get_db)
+):
+    """
+    Processa todos os clientes não processados para gerar embeddings vetoriais.
+
+    Este endpoint processa em lote todos os clientes que ainda não têm embeddings,
+    permitindo busca semântica eficiente. Útil para inicializar o sistema ou
+    processar clientes criados manualmente.
+
+    **Parâmetros:**
+    - limit: Número máximo de clientes a processar (opcional)
+
+    **Resposta:**
+    Retorna estatísticas do processamento: quantos foram processados, erros, etc.
+    """
+    client_service = ClientService(db)
+    try:
+        result = client_service.process_all_clients(limit)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+
 @router.get("/{client_id}", response_model=ClientResponse)
 def get_client(
     client_id: int,

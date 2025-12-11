@@ -10,6 +10,7 @@ import re
 from datetime import datetime
 from app.services.document_parser_service import DocumentParserService
 from app.services.ai_service import AIService
+from langchain.prompts import PromptTemplate
 import logging
 
 logger = logging.getLogger(__name__)
@@ -440,30 +441,151 @@ class ClientService:
 
         return client
 
+    def build_client_text_for_embedding(self, client):
+        lines = ["Cliente que possui as informações abaixo (dados pessoais, contatos e endereços):", ""]
+
+        # === NOME - várias formas ===
+        nome_completo = (client.name or "").strip()
+        primeiro_nome = nome_completo.split()[0] if nome_completo else ""
+        ultimo_nome = " ".join(nome_completo.split()[-1:]) if nome_completo else "" if len(nome_completo.split()) > 1 else nome_completo
+
+        lines.extend([
+            f"Nome completo: {nome_completo}",
+            f"Primeiro nome: {primeiro_nome}",
+            f"Último nome: {ultimo_nome}",
+            f"Apelido: {client.nickname or ''}",
+            "",
+        ])
+
+        # === E-MAIL - quebrado ao extremo ===
+        email = (client.email or "").strip().lower()
+        if email and "@" in email:
+            usuario_email, dominio_completo = email.split("@", 1)
+            provedor = dominio_completo.split(".")[0]  # gmail, hotmail, yahoo, etc
+        else:
+            usuario_email = dominio_completo = provedor = ""
+
+        lines.extend([
+            f"E-mail completo: {email}",
+            f"Usuário do e-mail: {usuario_email}",
+            f"Domínio do e-mail: {dominio_completo}",
+            f"Provedor de e-mail: {provedor}",
+            "",
+        ])
+
+        # === TELEFONE ===
+        lines.append(f"Telefone: {client.phone or ''}")
+        lines.append("")
+
+        # === DOCUMENTOS ===
+        lines.extend([
+            f"CPF: {client.cpf or ''}",
+            f"RG: {client.rg or ''}",
+            "",
+        ])
+
+        # === DATA DE NASCIMENTO - em TODOS os formatos possíveis ===
+        if client.birth_date:
+            if isinstance(client.birth_date, str):
+                try:
+                    birth = datetime.strptime(client.birth_date, "%Y-%m-%d")
+                except:
+                    birth = None
+            else:
+                birth = client.birth_date
+
+            if birth:
+                linhas_data = [
+                    f"Data de nascimento: {birth.strftime('%d/%m/%Y')}",
+                    f"Data de nascimento (dia/mês/ano): {birth.day:02d}/{birth.month:02d}/{birth.year}",
+                    f"Data de nascimento (ISO): {birth.strftime('%Y-%m-%d')}",
+                    f"Data de nascimento (AAAAMMDD): {birth.strftime('%Y%m%d')}",
+                    f"Ano de nascimento: {birth.year}",
+                    f"Mês de nascimento: {birth.month:02d}",
+                    f"Dia de nascimento: {birth.day:02d}",
+                ]
+            else:
+                linhas_data = ["Data de nascimento: "]
+        else:
+            linhas_data = ["Data de nascimento: "]
+
+        lines.extend(linhas_data)
+        lines.append("")
+
+        # === ENDEREÇOS - também bem detalhados ===
+        if client.addresses:
+            for i, addr in enumerate(client.addresses, 1):
+                lines.append(f"ENDEREÇO {i}")
+                lines.extend([
+                    f"Rua/Av: {addr.street or ''}",
+                    f"Número: {addr.number or ''}",
+                    f"Complemento: {addr.complement or ''}",
+                    f"Bairro: {addr.neighborhood or ''}",
+                    f"Cidade: {addr.city or ''}",
+                    f"Estado: {addr.state or ''}",
+                    f"UF: {addr.state or ''}",
+                    f"CEP: {addr.zip_code or ''}",
+                    f"Endereço completo: {', '.join(filter(None, [addr.street, addr.number, addr.complement, addr.neighborhood, addr.city, addr.state, addr.zip_code]))}",
+                    "",
+                ])
+        else:
+            lines.append("Endereço: Nenhum endereço cadastrado")
+            lines.append("")
+
+        # Limpa linhas vazias no final
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+        full_text = "\n".join(lines).strip()
+        return full_text
+
     def process_client(self, client_id: int) -> Client:
-        """Processa cliente com IA (atualmente apenas marca como processado)"""
-        client = self.db.query(Client).filter(Client.id == client_id).first()
-        if not client:
-            raise ValueError("Cliente não encontrado")
+      """Gera embedding com Gemini e salva direto no campo embedding do Client"""
+      client = self.db.query(Client).filter(Client.id == client_id).first()
+      if not client:
+          raise ValueError("Cliente não encontrado")
 
-        # Por enquanto, apenas marca como processado
-        # Futuramente pode incluir processamento de IA específico para clientes
-        client.processed = True
-        self.db.commit()
-        self.db.refresh(client)
+      full_text = self.build_client_text_for_embedding(client)
 
-        return self._client_to_response(client)
+      if not full_text:
+          raise ValueError("Cliente sem dados para gerar embedding")
+
+      # === 2. Gera o embedding usando a função que você já tem ===
+      embedding_vector = self.ai_service.generate_embedding_complex(full_text)
+
+      # === 3. Salva direto no cliente ===
+      client.embedding = embedding_vector          # ← campo já existe no model
+      client.processed = True
+
+      self.db.commit()
+      self.db.refresh(client)
+
+      return self._client_to_response(client)
 
     def search_similar_clients(self, query: str, limit: int = 10) -> List[Dict]:
-      """Busca clientes por similaridade semântica PURA (só embedding CLIP)"""
+      """Busca clientes por similaridade semântica usando embeddings configuráveis"""
       try:
-          # 1. Gera embedding CLIP do texto
-          query_embedding = self.ai_service.generate_clip_text_embedding(query)
-          if not query_embedding or len(query_embedding) != 512:
-              logger.warning("Embedding inválido gerado")
+          import os
+
+          # Detectar dimensões baseadas na configuração
+          ai_model_type = os.getenv("AI_MODEL_TYPE", "gemini").lower().strip()
+          expected_dims = {
+              "gemini": 768,
+              "openai": 1536,
+              "local": 384
+          }.get(ai_model_type, 768)
+
+          # 1. Gera embedding usando a função configurada
+          query_embedding = self.ai_service.generate_embedding_complex(query)
+          if not query_embedding or len(query_embedding) != expected_dims:
+              logger.warning(f"Embedding inválido gerado: {len(query_embedding) if query_embedding else 0} dims, esperado {expected_dims} para {ai_model_type}")
               return []
 
-          # 2. Query otimizada com threshold direto no SQL (evita buscar tudo e filtrar depois)
+          # 2. Estima threshold dinâmico baseado na query
+          dynamic_threshold = self.estimate_search_threshold(query)
+          logger.info(f"Busca semântica: query='{query}', threshold={dynamic_threshold}, limit={limit}")
+
+          # 3. Query otimizada com threshold dinâmico
           sql = text("""
               SELECT
                   clients.*,
@@ -478,32 +600,155 @@ class ClientService:
 
           results = self.db.execute(sql, {
               "query_vec": f"[{','.join(map(str, query_embedding))}]",  # ← STRING no formato pgvector
-              "threshold": 0.76,  # 76% de similaridade - equilíbrio final
+              "threshold": dynamic_threshold,
               "limit": limit
           }).fetchall()
 
-
-          similar_clients = []
+          # Converter para dicionários com similarity_score
+          clients_data = []
           for row in results:
-              similarity = round((1 - row.distance) * 100, 2)
+              # row é um Row object do SQLAlchemy, converter para dict corretamente
+              client_data = {column: getattr(row, column) for column in row._fields if column != 'distance'}
+              distance = getattr(row, 'distance', None)
+              client_data['similarity_score'] = 1 - distance if distance is not None else None
+              clients_data.append(client_data)
 
-              client = self.get_client(row.id)
-              if not client:
-                  continue
-
-              # AQUI É A MAGIA QUE VOCÊ QUERIA DESDE O INÍCIO:
-              similar_clients.append({
-                  **row._asdict(),           # pega TUDO que veio do SQL (id, name, email, cpf, distance...)
-                  "documents": client.documents,
-                  "addresses": client.addresses,
-                  "similarity_score": similarity   # só adiciona o score
-              })
-
-          logger.info(f"Busca: '{query}' → {len(similar_clients)} resultados (threshold 78% aplicado no SQL)")
-          return similar_clients
+          return clients_data
 
       except Exception as e:
           logger.error(f"Erro fatal na busca semântica: {e}")
           import traceback
           traceback.print_exc()
           return []
+
+    def estimate_search_threshold(self, query: str) -> float:
+        """
+        Estima o threshold ideal de similaridade para uma query consultando diretamente o LLM.
+        Usa um prompt especializado para determinar o threshold ótimo baseado na análise da query.
+        """
+        try:
+            # Prompt especializado para determinar threshold
+            threshold_prompt = f"""
+            Eu sou um Agente especializado em procurar um ótimo threshold e baseado na pesquisa a seguir gostaria de um possível numero a usar que buscaria os melhores resultados:
+
+            Query: "{query}"
+
+            Analise esta query de busca e determine o threshold ideal de similaridade (0.0 a 1.0) para busca vetorial em um sistema de busca de clientes. Mas voce precisa usar sua propria experiencia pra me ajudar, preciso tentar colocar o valor que obtermos justamente para realizar outras pesquisas tentando acertar bem, e pelo visto a ideia eh sempre termos valores abaixo de 0.5 e acima de 0.3.
+
+            Retorne apenas um número decimal entre 0.0 e 1.0 representando o threshold recomendado.
+            Não inclua explicações, apenas o número.
+            """
+
+            # Usar LangChain diretamente para consultar o LLM
+            prompt = PromptTemplate(
+                template=threshold_prompt,
+                input_variables=[]
+            )
+
+            chain = prompt | self.ai_service.llm
+            result = chain.invoke({})
+
+            # Extrair o conteúdo da resposta
+            result_text = result.content if hasattr(result, 'content') else str(result)
+
+            # Extrair número da resposta
+            import re
+            threshold_match = re.search(r'(\d+\.?\d*)', result_text.strip())
+            if threshold_match:
+                threshold = float(threshold_match.group(1))
+                # Garantir que está entre 0.0 e 1.0
+                threshold = max(0.0, min(1.0, threshold))
+                logger.info(f"LLM determinou threshold {threshold} para query: '{query}'")
+                return threshold
+
+        except Exception as e:
+            logger.warning(f"Erro ao consultar LLM sobre threshold: {e}")
+
+        # Fallback para heurísticas se LLM falhar
+        logger.info(f"Usando fallback de heurísticas para query: '{query}'")
+        return self._estimate_threshold_fallback(query)
+
+    def _estimate_threshold_fallback(self, query: str) -> float:
+        """
+        Método de fallback usando heurísticas quando a IA não está disponível
+        """
+        query_lower = query.lower().strip()
+        words = query.split()
+        word_count = len(words)
+
+        # 1. Queries muito específicas (alta precisão necessária)
+        specific_indicators = [
+            '@', '.com', '.org', '.net', 'gmail', 'hotmail', 'yahoo',  # emails
+            'cpf', 'rg', 'cnpj',  # documentos
+            'telefone', 'celular', 'fone',  # contatos
+            'rua', 'avenida', 'av.', 'alameda', 'travessa'  # endereços específicos
+        ]
+
+        if any(indicator in query_lower for indicator in specific_indicators):
+            return 0.75  # Threshold alto para queries específicas
+
+        # 2. Queries com nomes próprios (palavras capitalizadas)
+        capitalized_words = [w for w in words if w and w[0].isupper() and len(w) > 1]
+        if len(capitalized_words) >= 2:  # Provavelmente nome + sobrenome
+            return 0.65
+
+        # 3. Queries numéricas (datas, CEPs, etc.)
+        import re
+        if re.search(r'\d{4,}', query):  # Pelo menos 4 dígitos consecutivos
+            return 0.70
+
+        # 4. Queries curtas e diretas (1-2 palavras)
+        if word_count <= 2:
+            if word_count == 1:
+                return 0.20  # Muito genérico
+            else:
+                return 0.35  # Duas palavras, moderadamente específico
+
+        # 5. Queries descritivas (3+ palavras)
+        if word_count >= 5:
+            return 0.45  # Queries longas precisam de threshold mais alto
+
+        # 6. Queries com conectores lógicos
+        logical_indicators = [' e ', ' ou ', ' com ', ' de ', ' em ', ' para ', ' que ']
+        if any(indicator in query_lower for indicator in logical_indicators):
+            return 0.40
+
+        # 7. Default para queries médias
+        return 0.35
+
+    def process_all_clients(self, limit: int = None) -> Dict:
+        """Processa todos os clientes para gerar embeddings"""
+        query = self.db.query(Client)
+
+        if limit:
+            query = query.limit(limit)
+
+        unprocessed_clients = query.all()
+
+        if not unprocessed_clients:
+            return {"processed": 0, "total": 0, "message": "Nenhum cliente para processar"}
+
+        processed_count = 0
+        errors = 0
+
+        for client in unprocessed_clients:
+            try:
+                # Usar o mesmo método process_client existente
+                self.process_client(client.id)
+                processed_count += 1
+
+                # Log de progresso a cada 10 clientes
+                if processed_count % 10 == 0:
+                    logger.info(f"Processados {processed_count}/{len(unprocessed_clients)} clientes")
+
+            except Exception as e:
+                errors += 1
+                logger.error(f"Erro ao processar cliente {client.id} ({client.name}): {str(e)}")
+                continue
+
+        return {
+            "processed": processed_count,
+            "errors": errors,
+            "total": len(unprocessed_clients),
+            "message": f"Processamento concluído: {processed_count} processados, {errors} erros"
+        }

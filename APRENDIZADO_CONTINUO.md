@@ -206,9 +206,9 @@ negative_examples = ["esta NÃO é um pássaro"]
 # Combina múltiplos modelos
 # CLIP + classificadores customizados
 # Votação para melhor precisão
-def ensemble_predict(image_embedding, text_embedding):
-    clip_score = clip_similarity(image_embedding, text_embedding)
-    custom_score = custom_classifier.predict(image_embedding)
+def ensemble_predict(embedding, text_embedding):
+    clip_score = clip_similarity(embedding, text_embedding)
+    custom_score = custom_classifier.predict(embedding)
     return (clip_score + custom_score) / 2
 ```
 

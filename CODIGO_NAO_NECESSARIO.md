@@ -474,9 +474,9 @@ def get_photo(self, photo_id: int) -> Photo:  # linha 529
 ```python
 sql = text("""
     SELECT id, original_filename, user_description,
-           image_embedding <=> :vec AS distance
+           embedding <=> :vec AS distance
     FROM photos
-    WHERE image_embedding IS NOT NULL
+    WHERE embedding IS NOT NULL
     ORDER BY distance
     LIMIT :limit
 """)

@@ -79,12 +79,12 @@ class PhotoService:
 
             # 3. Generate Image Embedding using OpenAI CLIP
             logger.info(f"Generating CLIP image embedding for {unique_filename}...")
-            image_embedding = ai_service.generate_clip_image_embedding(content)
+            embedding = ai_service.generate_clip_embedding(content)
 
             if embedding:
                 photo.embedding = embedding
-            if image_embedding:
-                photo.image_embedding = image_embedding
+            if embedding:
+                photo.embedding = embedding
                 photo.processed = True
 
             self.db.add(photo)
